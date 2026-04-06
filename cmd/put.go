@@ -85,6 +85,9 @@ var putCmd = &cobra.Command{
 			return err
 		}
 
+		// sync root index if cloud transport (makes new doc visible)
+		syncCloudRoot(t)
+
 		output(map[string]any{"id": docID, "name": visibleName, "fileType": fileType, "status": "uploaded"})
 		return nil
 	},

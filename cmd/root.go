@@ -226,6 +226,9 @@ func printTree(tree *model.Tree, parentID string, depth int) {
 	}
 }
 
+// syncCloudRoot is a no-op placeholder — cloud writes require SSH for now
+func syncCloudRoot(t transport.Transport) {}
+
 func isTerminal() bool {
 	fi, _ := os.Stdout.Stat()
 	return (fi.Mode() & os.ModeCharDevice) != 0
