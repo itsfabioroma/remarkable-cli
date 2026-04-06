@@ -8,3 +8,5 @@ remarkable
 .idea/
 .vscode/
 .gstack/
+Main_export/
+*_export/
