@@ -1,3 +1,35 @@
+# remarkable-cli
+
+Go CLI for reMarkable Paper Pro. SSH + Cloud transports, JSON output for agents.
+
+## Build & test
+
+```bash
+go build -o remarkable .
+go test ./...
+```
+
+## Architecture
+
+```
+cmd/           cobra commands (ls, get, put, rm, mv, mkdir, export, watch, splash, etc)
+pkg/transport/ SSH + Cloud transports, auto-detect
+pkg/model/     Document, Metadata, Tree, Pen types, Error envelope
+pkg/encoding/  v6 .rm binary parser (strokes, authors)
+pkg/render/    SVG renderer
+pkg/auth/      Cloud auth (device registration, token management)
+```
+
+One transport interface. SSH is primary (fast, full access). Cloud is read-only fallback.
+
+## Testing
+
+```bash
+go test ./...
+```
+
+Real .rm fixtures from a Paper Pro in `testdata/fixtures/`.
+
 ## Skill routing
 
 When the user's request matches an available skill, ALWAYS invoke it using the Skill
@@ -7,7 +39,7 @@ The skill has specialized workflows that produce better results than ad-hoc answ
 Key routing rules:
 - Product ideas, "is this worth building", brainstorming → invoke office-hours
 - Bugs, errors, "why is this broken", 500 errors → invoke investigate
-- Ship, deploy, push, create PR → invoke ship
+- Ship, deploy, push, create PR ��� invoke ship
 - QA, test the site, find bugs → invoke qa
 - Code review, check my diff → invoke review
 - Update docs after shipping → invoke document-release
