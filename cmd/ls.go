@@ -1,12 +1,17 @@
 package cmd
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
+
 	"github.com/itsfabioroma/remarkable-cli/pkg/model"
 	"github.com/spf13/cobra"
 )
 
-// --all flag to include trashed docs
+// flags
 var flagAll bool
+var flagTag string
 
 var lsCmd = &cobra.Command{
 	Use:   "ls [path]",
@@ -37,6 +42,34 @@ var lsCmd = &cobra.Command{
 			docs = filtered
 		}
 
+		// filter by tag (requires SSH to read .content files)
+		if flagTag != "" {
+			sshT, sshErr := getSSH()
+			if sshErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: --tag requires SSH, skipping tag filter\n")
+			} else {
+				defer sshT.Close()
+				tagged := make([]model.Document, 0)
+				for _, d := range docs {
+					rc, err := sshT.ReadFile(d.ID, "content")
+					if err != nil {
+						continue
+					}
+					var raw map[string]any
+					json.NewDecoder(rc).Decode(&raw)
+					rc.Close()
+
+					for _, tag := range getStringSlice(raw, "tags") {
+						if tag == flagTag {
+							tagged = append(tagged, d)
+							break
+						}
+					}
+				}
+				docs = tagged
+			}
+		}
+
 		// if a path is given, filter to that folder
 		if len(args) > 0 {
 			// TODO: resolve path and filter children
@@ -50,5 +83,6 @@ var lsCmd = &cobra.Command{
 
 func init() {
 	lsCmd.Flags().BoolVarP(&flagAll, "all", "a", false, "include trashed documents")
+	lsCmd.Flags().StringVar(&flagTag, "tag", "", "filter by document tag")
 	rootCmd.AddCommand(lsCmd)
 }

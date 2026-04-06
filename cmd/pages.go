@@ -313,6 +313,166 @@ func reorderPageInContent(sshT sshWriter, docID string, rawContent []byte, fromI
 	return sshT.WriteRawFile(contentPath, newContent)
 }
 
+// copy a page from one notebook to another
+var pagesCopyCmd = &cobra.Command{
+	Use:   "copy <notebook> --page <n> --to <destination>",
+	Short: "Copy a page from one notebook to another",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		pageNum, _ := cmd.Flags().GetInt("page")
+		destName, _ := cmd.Flags().GetString("to")
+		if pageNum < 1 {
+			return fmt.Errorf("--page is required (1-indexed)")
+		}
+		if destName == "" {
+			return fmt.Errorf("--to is required (destination notebook)")
+		}
+
+		sshT, err := getSSH()
+		if err != nil {
+			return err
+		}
+		defer sshT.Close()
+
+		// resolve source and destination notebooks
+		srcDoc, err := findDoc(sshT, args[0])
+		if err != nil {
+			return err
+		}
+		dstDoc, err := findDoc(sshT, destName)
+		if err != nil {
+			return err
+		}
+
+		// read source content to get page UUID
+		srcContent, _, err := readContent(sshT, srcDoc.ID)
+		if err != nil {
+			return err
+		}
+		srcPages := srcContent.GetCPages()
+		idx := pageNum - 1
+		if idx < 0 || idx >= len(srcPages) {
+			return fmt.Errorf("page %d does not exist (source has %d pages)", pageNum, len(srcPages))
+		}
+		srcPageID := srcPages[idx].ID
+
+		// read destination content for appending
+		_, dstRawContent, err := readContent(sshT, dstDoc.ID)
+		if err != nil {
+			return err
+		}
+
+		// copy .rm file with a new UUID
+		newPageID := uuid.New().String()
+		srcRmPath := filepath.Join(xochitlPath, srcDoc.ID, srcPageID+".rm")
+		dstRmPath := filepath.Join(xochitlPath, dstDoc.ID, newPageID+".rm")
+		if _, err := sshT.RunCommand(fmt.Sprintf("cp %s %s", srcRmPath, dstRmPath)); err != nil {
+			return fmt.Errorf("failed to copy .rm file: %w", err)
+		}
+
+		// add page to destination .content
+		if err := addPageToContentAtEnd(sshT, dstDoc.ID, dstRawContent, newPageID); err != nil {
+			return err
+		}
+
+		sshT.RunCommand("systemctl restart xochitl")
+
+		output(map[string]any{
+			"source":      srcDoc.Name,
+			"destination": dstDoc.Name,
+			"sourcePage":  pageNum,
+			"newPageId":   newPageID,
+			"status":      "copied",
+		})
+		return nil
+	},
+}
+
+// move a page from one notebook to another (copy + delete from source)
+var pagesMoveToCmd = &cobra.Command{
+	Use:   "move-to <notebook> --page <n> --to <destination>",
+	Short: "Move a page to another notebook",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		pageNum, _ := cmd.Flags().GetInt("page")
+		destName, _ := cmd.Flags().GetString("to")
+		if pageNum < 1 {
+			return fmt.Errorf("--page is required (1-indexed)")
+		}
+		if destName == "" {
+			return fmt.Errorf("--to is required (destination notebook)")
+		}
+
+		sshT, err := getSSH()
+		if err != nil {
+			return err
+		}
+		defer sshT.Close()
+
+		// resolve source and destination notebooks
+		srcDoc, err := findDoc(sshT, args[0])
+		if err != nil {
+			return err
+		}
+		dstDoc, err := findDoc(sshT, destName)
+		if err != nil {
+			return err
+		}
+
+		// read source content
+		srcContent, srcRawContent, err := readContent(sshT, srcDoc.ID)
+		if err != nil {
+			return err
+		}
+		srcPages := srcContent.GetCPages()
+		idx := pageNum - 1
+		if idx < 0 || idx >= len(srcPages) {
+			return fmt.Errorf("page %d does not exist (source has %d pages)", pageNum, len(srcPages))
+		}
+		srcPageID := srcPages[idx].ID
+
+		// read destination content
+		_, dstRawContent, err := readContent(sshT, dstDoc.ID)
+		if err != nil {
+			return err
+		}
+
+		// copy .rm file to destination with new UUID
+		newPageID := uuid.New().String()
+		srcRmPath := filepath.Join(xochitlPath, srcDoc.ID, srcPageID+".rm")
+		dstRmPath := filepath.Join(xochitlPath, dstDoc.ID, newPageID+".rm")
+		if _, err := sshT.RunCommand(fmt.Sprintf("cp %s %s", srcRmPath, dstRmPath)); err != nil {
+			return fmt.Errorf("failed to copy .rm file: %w", err)
+		}
+
+		// add page to destination .content
+		if err := addPageToContentAtEnd(sshT, dstDoc.ID, dstRawContent, newPageID); err != nil {
+			return err
+		}
+
+		// remove page from source .content
+		if err := removePageFromContent(sshT, srcDoc.ID, srcRawContent, idx); err != nil {
+			return err
+		}
+
+		// delete source .rm file
+		sshT.RunCommand(fmt.Sprintf("rm -f %s", srcRmPath))
+
+		sshT.RunCommand("systemctl restart xochitl")
+
+		output(map[string]any{
+			"source":      srcDoc.Name,
+			"destination": dstDoc.Name,
+			"sourcePage":  pageNum,
+			"newPageId":   newPageID,
+			"status":      "moved",
+		})
+		return nil
+	},
+}
+
+const xochitlPath = "/home/root/.local/share/remarkable/xochitl"
+
 func init() {
 	pagesAddCmd.Flags().String("template", "Blank", "page template (Blank, P Grid medium, etc)")
 	pagesAddCmd.Flags().Int("after", 0, "insert after page N (0=append)")
@@ -320,8 +480,18 @@ func init() {
 	pagesMoveCmd.Flags().Int("page", 0, "page to move (1-indexed)")
 	pagesMoveCmd.Flags().Int("to", 0, "target position (1-indexed)")
 
+	// copy flags
+	pagesCopyCmd.Flags().Int("page", 0, "page to copy (1-indexed)")
+	pagesCopyCmd.Flags().String("to", "", "destination notebook")
+
+	// move-to flags
+	pagesMoveToCmd.Flags().Int("page", 0, "page to move (1-indexed)")
+	pagesMoveToCmd.Flags().String("to", "", "destination notebook")
+
 	pagesCmd.AddCommand(pagesAddCmd)
 	pagesCmd.AddCommand(pagesRmCmd)
 	pagesCmd.AddCommand(pagesMoveCmd)
+	pagesCmd.AddCommand(pagesCopyCmd)
+	pagesCmd.AddCommand(pagesMoveToCmd)
 	rootCmd.AddCommand(pagesCmd)
 }
