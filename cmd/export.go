@@ -149,18 +149,19 @@ Uses SSH when available, falls back to cloud automatically.
 }
 
 // convertSVGtoPNG converts SVG to PNG using available system tools
+// uses high resolution to capture full page content including tall scrolled pages
 func convertSVGtoPNG(svgPath, pngPath string) error {
-	// try rsvg-convert (Linux)
+	// try rsvg-convert (Linux) — respects SVG dimensions properly
 	if _, err := exec.LookPath("rsvg-convert"); err == nil {
-		return exec.Command("rsvg-convert", svgPath, "-o", pngPath, "-w", "2000").Run()
+		return exec.Command("rsvg-convert", svgPath, "-o", pngPath, "-w", "1600").Run()
 	}
 
-	// try qlmanage (macOS)
+	// try qlmanage (macOS) — use large size to capture tall pages
 	if _, err := exec.LookPath("qlmanage"); err == nil {
 		dir := filepath.Dir(pngPath)
-		cmd := exec.Command("qlmanage", "-t", "-s", "2000", "-o", dir, svgPath)
+		// use 4000 to handle very tall scrolled pages
+		cmd := exec.Command("qlmanage", "-t", "-s", "4000", "-o", dir, svgPath)
 		cmd.Run()
-		// qlmanage outputs as <name>.svg.png
 		qlOutput := svgPath + ".png"
 		if _, err := os.Stat(qlOutput); err == nil {
 			return os.Rename(qlOutput, pngPath)

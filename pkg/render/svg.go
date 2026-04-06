@@ -56,21 +56,23 @@ func (s *SVGRenderer) RenderPage(w io.Writer, blocks []rm.Block) error {
 	}
 
 	// add padding
-	pad := float32(20)
+	pad := float32(40)
 	minX -= pad
 	minY -= pad
 	maxX += pad
 	maxY += pad
 
-	// use device dimensions if no strokes or bbox is within screen
-	viewW := maxX - minX
-	viewH := maxY - minY
+	// ensure minimum page dimensions (capture full scrolled content)
+	// reMarkable pages can scroll far beyond screen height
 	if len(lines) == 0 {
-		viewW = float32(s.Width)
-		viewH = float32(s.Height)
 		minX = 0
 		minY = 0
+		maxX = float32(s.Width)
+		maxY = float32(s.Height)
 	}
+
+	viewW := maxX - minX
+	viewH := maxY - minY
 
 	// SVG header
 	fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
