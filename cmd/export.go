@@ -7,9 +7,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/fabioroma/remarkable-cli/pkg/encoding/rm"
-	"github.com/fabioroma/remarkable-cli/pkg/model"
-	"github.com/fabioroma/remarkable-cli/pkg/render"
+	"github.com/itsfabioroma/remarkable-cli/pkg/encoding/rm"
+	"github.com/itsfabioroma/remarkable-cli/pkg/model"
+	"github.com/itsfabioroma/remarkable-cli/pkg/render"
 	"github.com/spf13/cobra"
 )
 

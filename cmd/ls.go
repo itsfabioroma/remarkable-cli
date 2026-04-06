@@ -1,8 +1,12 @@
 package cmd
 
 import (
+	"github.com/itsfabioroma/remarkable-cli/pkg/model"
 	"github.com/spf13/cobra"
 )
+
+// --all flag to include trashed docs
+var flagAll bool
 
 var lsCmd = &cobra.Command{
 	Use:   "ls [path]",
@@ -22,6 +26,17 @@ var lsCmd = &cobra.Command{
 			return err
 		}
 
+		// filter out trashed docs unless --all is set
+		if !flagAll {
+			filtered := make([]model.Document, 0, len(docs))
+			for _, d := range docs {
+				if d.Parent != "trash" {
+					filtered = append(filtered, d)
+				}
+			}
+			docs = filtered
+		}
+
 		// if a path is given, filter to that folder
 		if len(args) > 0 {
 			// TODO: resolve path and filter children
@@ -34,5 +49,6 @@ var lsCmd = &cobra.Command{
 }
 
 func init() {
+	lsCmd.Flags().BoolVarP(&flagAll, "all", "a", false, "include trashed documents")
 	rootCmd.AddCommand(lsCmd)
 }

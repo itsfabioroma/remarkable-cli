@@ -9,8 +9,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/fabioroma/remarkable-cli/pkg/model"
-	"github.com/fabioroma/remarkable-cli/pkg/transport"
+	"github.com/itsfabioroma/remarkable-cli/pkg/model"
+	"github.com/itsfabioroma/remarkable-cli/pkg/transport"
 	"github.com/spf13/cobra"
 )
 

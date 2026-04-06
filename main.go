@@ -1,6 +1,6 @@
 package main
 
-import "github.com/fabioroma/remarkable-cli/cmd"
+import "github.com/itsfabioroma/remarkable-cli/cmd"
 
 func main() {
 	cmd.Execute()

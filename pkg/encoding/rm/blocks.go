@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/fabioroma/remarkable-cli/pkg/model"
+	"github.com/itsfabioroma/remarkable-cli/pkg/model"
 )
 
 // Block is a parsed top-level block from a v6 .rm file

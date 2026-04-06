@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/fabioroma/remarkable-cli/pkg/model"
-	"github.com/fabioroma/remarkable-cli/pkg/transport"
+	"github.com/itsfabioroma/remarkable-cli/pkg/model"
+	"github.com/itsfabioroma/remarkable-cli/pkg/transport"
 	"github.com/spf13/cobra"
 )
 
@@ -18,9 +18,15 @@ var (
 	flagKeyPath   string
 )
 
+// version is set at build time or defaults to dev
+var version = "0.1.0"
+
 var rootCmd = &cobra.Command{
-	Use:   "remarkable",
-	Short: "CLI for reMarkable Paper Pro — SSH, Cloud, agent-native JSON",
+	Use:           "remarkable",
+	Short:         "CLI for reMarkable Paper Pro — SSH, Cloud, agent-native JSON",
+	Version:       version,
+	SilenceUsage:  true,
+	SilenceErrors: true,
 }
 
 func Execute() {

@@ -5,8 +5,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/fabioroma/remarkable-cli/pkg/encoding/rm"
-	"github.com/fabioroma/remarkable-cli/pkg/model"
+	"github.com/itsfabioroma/remarkable-cli/pkg/encoding/rm"
+	"github.com/itsfabioroma/remarkable-cli/pkg/model"
 )
 
 // screen dimensions

@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/fabioroma/remarkable-cli/pkg/transport"
+	"github.com/itsfabioroma/remarkable-cli/pkg/transport"
 	"github.com/spf13/cobra"
 )
 

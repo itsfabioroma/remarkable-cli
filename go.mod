@@ -1,4 +1,4 @@
-module github.com/fabioroma/remarkable-cli
+module github.com/itsfabioroma/remarkable-cli
 
 go 1.25.6
 

@@ -3,7 +3,7 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/fabioroma/remarkable-cli/pkg/model"
+	"github.com/itsfabioroma/remarkable-cli/pkg/model"
 	"github.com/spf13/cobra"
 )
 

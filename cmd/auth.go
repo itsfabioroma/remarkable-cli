@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/fabioroma/remarkable-cli/pkg/auth"
+	"github.com/itsfabioroma/remarkable-cli/pkg/auth"
 	"github.com/spf13/cobra"
 )
 

@@ -28,3 +28,8 @@ const (
 func (d *Document) IsFolder() bool {
 	return d.Type == DocTypeCollection
 }
+
+// IsTrashed returns true if the document is in the trash
+func (d *Document) IsTrashed() bool {
+	return d.Parent == "trash"
+}

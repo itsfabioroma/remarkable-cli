@@ -4,7 +4,7 @@ import (
 	"context"
 	"io"
 
-	"github.com/fabioroma/remarkable-cli/pkg/model"
+	"github.com/itsfabioroma/remarkable-cli/pkg/model"
 )
 
 // Transport is the single interface for device communication

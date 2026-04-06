@@ -3,7 +3,7 @@ package transport
 import (
 	"fmt"
 
-	"github.com/fabioroma/remarkable-cli/pkg/model"
+	"github.com/itsfabioroma/remarkable-cli/pkg/model"
 )
 
 // AutoDetect tries SSH first, falls back to cloud

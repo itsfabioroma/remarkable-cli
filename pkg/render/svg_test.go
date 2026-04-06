@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fabioroma/remarkable-cli/pkg/encoding/rm"
+	"github.com/itsfabioroma/remarkable-cli/pkg/encoding/rm"
 )
 
 func TestSVGRenderer_RenderFixture(t *testing.T) {

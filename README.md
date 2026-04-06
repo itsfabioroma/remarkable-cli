@@ -21,6 +21,16 @@ That's it. Four commands from zero to listing your documents.
 git clone https://github.com/itsfabioroma/remarkable-cli && cd remarkable-cli && go build -o remarkable . && ./remarkable connect
 ```
 
+## Global install
+
+After building, make `remarkable` available everywhere:
+
+```bash
+sudo ln -sf $(pwd)/remarkable /usr/local/bin/remarkable
+# or
+make install  # installs to $GOPATH/bin
+```
+
 ## What it does
 
 ```bash
@@ -78,6 +88,18 @@ The skill teaches the agent every command, transport rules, and typical workflow
 - Go 1.21+
 - reMarkable Paper Pro with developer mode enabled (for SSH)
 - optional: reMarkable Cloud subscription (for cloud fallback)
+
+## Install
+
+```bash
+# from source (puts in $GOPATH/bin)
+go install github.com/itsfabioroma/remarkable-cli@latest
+
+# or build locally
+git clone https://github.com/itsfabioroma/remarkable-cli
+cd remarkable-cli
+make install
+```
 
 ## WiFi SSH
 

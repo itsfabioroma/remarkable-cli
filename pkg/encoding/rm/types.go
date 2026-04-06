@@ -1,6 +1,6 @@
 package rm
 
-import "github.com/fabioroma/remarkable-cli/pkg/model"
+import "github.com/itsfabioroma/remarkable-cli/pkg/model"
 
 // v6 file header
 const V6Header = "reMarkable .lines file, version=6          "
