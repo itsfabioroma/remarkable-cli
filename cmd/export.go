@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 
 	"github.com/itsfabioroma/remarkable-cli/pkg/encoding/rm"
@@ -127,16 +126,18 @@ Uses SSH when available, falls back to cloud automatically.
 			entry := map[string]any{"page": pageNum}
 
 			if exportSVG {
-				// SVG-only mode
 				entry["file"] = svgFile
 			} else {
-				// default: convert to PNG (readable by AI agents)
+				// render PNG directly in Go — no external tools needed
 				pngFile := filepath.Join(outDir, fmt.Sprintf("page_%03d.png", pageNum))
-				if convertSVGtoPNG(svgFile, pngFile) == nil {
+				pf, err := os.Create(pngFile)
+				if err == nil {
+					render.RenderPagePNG(pf, blocks)
+					pf.Close()
 					entry["file"] = pngFile
-					os.Remove(svgFile) // clean up intermediate SVG
+					os.Remove(svgFile) // clean up SVG
 				} else {
-					entry["file"] = svgFile // fallback to SVG if conversion fails
+					entry["file"] = svgFile
 				}
 			}
 
@@ -148,28 +149,6 @@ Uses SSH when available, falls back to cloud automatically.
 	},
 }
 
-// convertSVGtoPNG converts SVG to PNG using available system tools
-// uses high resolution to capture full page content including tall scrolled pages
-func convertSVGtoPNG(svgPath, pngPath string) error {
-	// try rsvg-convert (Linux) — respects SVG dimensions properly
-	if _, err := exec.LookPath("rsvg-convert"); err == nil {
-		return exec.Command("rsvg-convert", svgPath, "-o", pngPath, "-w", "1600").Run()
-	}
-
-	// try qlmanage (macOS) — use large size to capture tall pages
-	if _, err := exec.LookPath("qlmanage"); err == nil {
-		dir := filepath.Dir(pngPath)
-		// use 4000 to handle very tall scrolled pages
-		cmd := exec.Command("qlmanage", "-t", "-s", "4000", "-o", dir, svgPath)
-		cmd.Run()
-		qlOutput := svgPath + ".png"
-		if _, err := os.Stat(qlOutput); err == nil {
-			return os.Rename(qlOutput, pngPath)
-		}
-	}
-
-	return fmt.Errorf("no SVG-to-PNG converter found (install rsvg-convert or use macOS)")
-}
 
 func init() {
 	exportCmd.Flags().StringVarP(&exportOutput, "output", "o", "", "output directory")
