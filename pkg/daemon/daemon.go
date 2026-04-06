@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fabioroma/remarkable-cli/pkg/model"
 	"github.com/fabioroma/remarkable-cli/pkg/transport"
 )
 
@@ -37,12 +38,16 @@ type Response struct {
 	Error string          `json:"error,omitempty"`
 }
 
-// Daemon holds a persistent transport connection
+// Daemon holds a persistent transport connection + in-memory doc cache
 type Daemon struct {
 	transport transport.Transport
 	listener  net.Listener
 	mu        sync.Mutex
 	stopCh    chan struct{}
+
+	// in-memory cache — populated on connect, refreshed on mutations
+	docs       []model.Document
+	docsLoaded time.Time
 }
 
 // Start launches the daemon with a pre-connected transport
@@ -67,7 +72,17 @@ func Start(t transport.Transport) error {
 		stopCh:    make(chan struct{}),
 	}
 
-	fmt.Printf("daemon started (pid %d, transport: %s)\n", os.Getpid(), t.Name())
+	// pre-load document list into memory
+	docs, err := t.ListDocuments()
+	if err == nil {
+		d.docs = docs
+		d.docsLoaded = time.Now()
+	}
+
+	fmt.Printf("daemon started (pid %d, transport: %s, %d docs cached)\n", os.Getpid(), t.Name(), len(d.docs))
+
+	// background refresh every 30s
+	go d.refreshLoop()
 
 	// accept connections
 	go d.acceptLoop()
@@ -80,6 +95,27 @@ func Start(t transport.Transport) error {
 	os.Remove(PidPath())
 	t.Close()
 	return nil
+}
+
+func (d *Daemon) refreshLoop() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-d.stopCh:
+			return
+		case <-ticker.C:
+			docs, err := d.transport.ListDocuments()
+			if err != nil {
+				continue
+			}
+			d.mu.Lock()
+			d.docs = docs
+			d.docsLoaded = time.Now()
+			d.mu.Unlock()
+		}
+	}
 }
 
 func (d *Daemon) acceptLoop() {
@@ -117,12 +153,20 @@ func (d *Daemon) handleConn(conn net.Conn) {
 		writeResponse(conn, Response{OK: true, Data: raw(`{"status":"alive","transport":"` + d.transport.Name() + `"}`)})
 
 	case "ls":
+		// return in-memory cached docs — instant
+		data, _ := json.Marshal(d.docs)
+		writeResponse(conn, Response{OK: true, Data: data})
+
+	case "refresh":
+		// force refresh the cache
 		docs, err := d.transport.ListDocuments()
 		if err != nil {
 			writeResponse(conn, Response{Error: err.Error()})
 			return
 		}
-		data, _ := json.Marshal(docs)
+		d.docs = docs
+		d.docsLoaded = time.Now()
+		data, _ := json.Marshal(map[string]any{"documents": len(docs), "refreshed": d.docsLoaded})
 		writeResponse(conn, Response{OK: true, Data: data})
 
 	case "stop":

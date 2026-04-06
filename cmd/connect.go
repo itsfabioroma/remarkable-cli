@@ -135,11 +135,15 @@ Examples:
 		}
 		daemonCmd.Process.Release()
 
-		// wait for daemon to be ready
-		for i := 0; i < 20; i++ {
+		// wait for daemon to be ready and cache warmed
+		for i := 0; i < 50; i++ {
 			time.Sleep(100 * time.Millisecond)
 			if daemon.IsRunning() {
-				break
+				// verify cache is populated
+				resp, err := daemon.SendCommand(daemon.Request{Command: "ping"})
+				if err == nil && resp.OK {
+					break
+				}
 			}
 		}
 
