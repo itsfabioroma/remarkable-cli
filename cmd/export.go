@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/itsfabioroma/remarkable-cli/pkg/encoding/rm"
@@ -13,12 +14,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var exportOutput string
+var (
+	exportOutput string
+	exportPage   int
+	exportPNG    bool
+)
 
 var exportCmd = &cobra.Command{
 	Use:   "export <name>",
-	Short: "Render document annotations to SVG",
-	Args:  cobra.ExactArgs(1),
+	Short: "Export notebook pages to SVG or PNG",
+	Long: `Render handwritten pages to SVG (or PNG with --png).
+Use --page N to export a single page.
+
+  remarkable export "Main"                 # all pages → SVG
+  remarkable export "Main" --page 19       # single page
+  remarkable export "Main" --page 19 --png # as PNG (readable by AI)`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		t, err := getTransport()
 		if err != nil {
@@ -66,6 +77,15 @@ var exportCmd = &cobra.Command{
 			return err
 		}
 
+		// filter to single page if --page is set
+		if exportPage > 0 {
+			idx := exportPage - 1
+			if idx < 0 || idx >= len(pageIDs) {
+				return fmt.Errorf("page %d does not exist (notebook has %d pages)", exportPage, len(pageIDs))
+			}
+			pageIDs = []string{pageIDs[idx]}
+		}
+
 		// output dir
 		outDir := exportOutput
 		if outDir == "" {
@@ -78,6 +98,11 @@ var exportCmd = &cobra.Command{
 		var exported []map[string]any
 
 		for i, pageID := range pageIDs {
+			pageNum := i + 1
+			if exportPage > 0 {
+				pageNum = exportPage
+			}
+
 			rc, err := t.ReadFile(doc.ID, pageID+".rm")
 			if err != nil {
 				continue
@@ -90,15 +115,26 @@ var exportCmd = &cobra.Command{
 				continue
 			}
 
-			outFile := filepath.Join(outDir, fmt.Sprintf("page_%03d.svg", i+1))
-			f, err := os.Create(outFile)
+			// render SVG
+			svgFile := filepath.Join(outDir, fmt.Sprintf("page_%03d.svg", pageNum))
+			f, err := os.Create(svgFile)
 			if err != nil {
 				continue
 			}
 			renderer.RenderPage(f, blocks)
 			f.Close()
 
-			exported = append(exported, map[string]any{"page": i + 1, "file": outFile})
+			entry := map[string]any{"page": pageNum, "svg": svgFile}
+
+			// convert to PNG if requested
+			if exportPNG {
+				pngFile := filepath.Join(outDir, fmt.Sprintf("page_%03d.png", pageNum))
+				if convertSVGtoPNG(svgFile, pngFile) == nil {
+					entry["png"] = pngFile
+				}
+			}
+
+			exported = append(exported, entry)
 		}
 
 		output(map[string]any{"id": doc.ID, "name": doc.Name, "pages": exported, "output": outDir})
@@ -106,7 +142,31 @@ var exportCmd = &cobra.Command{
 	},
 }
 
+// convertSVGtoPNG converts SVG to PNG using available system tools
+func convertSVGtoPNG(svgPath, pngPath string) error {
+	// try rsvg-convert (Linux)
+	if _, err := exec.LookPath("rsvg-convert"); err == nil {
+		return exec.Command("rsvg-convert", svgPath, "-o", pngPath, "-w", "2000").Run()
+	}
+
+	// try qlmanage (macOS)
+	if _, err := exec.LookPath("qlmanage"); err == nil {
+		dir := filepath.Dir(pngPath)
+		cmd := exec.Command("qlmanage", "-t", "-s", "2000", "-o", dir, svgPath)
+		cmd.Run()
+		// qlmanage outputs as <name>.svg.png
+		qlOutput := svgPath + ".png"
+		if _, err := os.Stat(qlOutput); err == nil {
+			return os.Rename(qlOutput, pngPath)
+		}
+	}
+
+	return fmt.Errorf("no SVG-to-PNG converter found (install rsvg-convert or use macOS)")
+}
+
 func init() {
 	exportCmd.Flags().StringVarP(&exportOutput, "output", "o", "", "output directory")
+	exportCmd.Flags().IntVar(&exportPage, "page", 0, "export single page (1-indexed)")
+	exportCmd.Flags().BoolVar(&exportPNG, "png", false, "also convert to PNG (readable by AI)")
 	rootCmd.AddCommand(exportCmd)
 }
