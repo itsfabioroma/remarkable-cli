@@ -94,7 +94,20 @@ sudo ln -sf $(pwd)/remarkable /usr/local/bin/remarkable
 - reMarkable Paper Pro
 - optional: developer mode + SSH for write access
 
-## WiFi SSH (optional, power users)
+## SSH setup (optional, for write access)
+
+SSH unlocks uploads, deletes, writes, page management, and more. Requires developer mode.
+
+### 1. Enable developer mode
+
+On your reMarkable: Settings → General → Developer mode → Enable.
+
+### 2. Find your device IP
+
+- **USB**: always `10.11.99.1`
+- **WiFi**: on your reMarkable go to Settings → General → About → Copyrights and licenses → General information. The IP is listed under the password.
+
+### 3. Enable WiFi SSH (optional)
 
 Paper Pro blocks WiFi SSH by default. Enable once via USB:
 
@@ -103,8 +116,8 @@ ssh root@10.11.99.1
 rm-ssh-over-wlan on
 ```
 
-Then add SSH to your config:
+### 4. Add SSH to your config
 
 ```bash
-remarkable connect 192.168.1.5 --ssh-only
+remarkable connect <your-device-ip> --ssh-only --password <your-password>
 ```
