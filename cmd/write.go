@@ -4,9 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
-	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/itsfabioroma/remarkable-cli/pkg/encoding/rm"
@@ -139,6 +138,9 @@ The text appears as handwritten fineliner strokes on the device.
 			return err
 		}
 
+		// restart xochitl so it picks up the new/modified page
+		sshT.RunCommand("systemctl restart xochitl")
+
 		pageNum := len(pageIDs)
 		if writePage > 0 {
 			pageNum = writePage
@@ -164,45 +166,76 @@ The text appears as handwritten fineliner strokes on the device.
 	},
 }
 
-// updateContentPages adds a new page UUID to the .content file
-func updateContentPages(sshT interface{ RunCommand(string) (string, error) }, docID string, originalContent []byte, newPageID string) error {
-	// parse the original content
+// updateContentPages adds a new page to the .content file with proper CRDT fields
+type sshWriter interface {
+	RunCommand(string) (string, error)
+	WriteRawFile(string, []byte) error
+}
+
+func updateContentPages(sshT sshWriter, docID string, originalContent []byte, newPageID string) error {
 	var raw map[string]any
 	json.Unmarshal(originalContent, &raw)
 
-	// check if using cPages (new format) or pages (old format)
+	// generate a CRDT timestamp: use page count + 1 as sequence
+	pageCount := 0
+	if pc, ok := raw["pageCount"].(float64); ok {
+		pageCount = int(pc)
+	}
+	seq := pageCount + 1
+	timestamp := fmt.Sprintf("1:%d", seq)
+	now := fmt.Sprintf("%d", timeNowMs())
+
+	// compute sort key: append "z" to the last page's idx to sort after it
+	lastIdx := "ba"
 	if cPages, ok := raw["cPages"].(map[string]any); ok {
-		// new format: add to cPages.pages array
 		pages, _ := cPages["pages"].([]any)
-		pages = append(pages, map[string]any{"id": newPageID})
+		if len(pages) > 0 {
+			lastPage, _ := pages[len(pages)-1].(map[string]any)
+			if idx, ok := lastPage["idx"].(map[string]any); ok {
+				if v, ok := idx["value"].(string); ok {
+					lastIdx = v + "a" // lexicographically after
+				}
+			}
+		}
+	}
+
+	// build proper page entry matching device format
+	newPage := map[string]any{
+		"id": newPageID,
+		"idx": map[string]any{
+			"timestamp": timestamp,
+			"value":     lastIdx,
+		},
+		"template": map[string]any{
+			"timestamp": timestamp,
+			"value":     "Blank",
+		},
+		"modifed": now, // yes, the device misspells "modified"
+	}
+
+	if cPages, ok := raw["cPages"].(map[string]any); ok {
+		pages, _ := cPages["pages"].([]any)
+		pages = append(pages, newPage)
 		cPages["pages"] = pages
 		raw["cPages"] = cPages
 	} else {
-		// old format: add to pages array
 		pages, _ := raw["pages"].([]any)
 		pages = append(pages, newPageID)
 		raw["pages"] = pages
 	}
 
 	// update page count
-	if pc, ok := raw["pageCount"].(float64); ok {
-		raw["pageCount"] = pc + 1
-	}
+	raw["pageCount"] = pageCount + 1
 
-	// write back
+	// write back via SFTP (avoids shell escaping issues)
 	newContent, _ := json.MarshalIndent(raw, "", "    ")
 	contentPath := filepath.Join("/home/root/.local/share/remarkable/xochitl", docID+".content")
 
-	escaped := strings.ReplaceAll(string(newContent), "'", "'\\''")
-	_, err := sshT.RunCommand(fmt.Sprintf("printf '%%s' '%s' > %s", escaped, contentPath))
-	if err != nil {
-		// fallback: write via temp file
-		tmpPath := "/tmp/remarkable-content-" + docID + ".json"
-		os.WriteFile(tmpPath, newContent, 0644)
-		return fmt.Errorf("cannot update .content: %w", err)
-	}
+	return sshT.WriteRawFile(contentPath, newContent)
+}
 
-	return nil
+func timeNowMs() int64 {
+	return time.Now().UnixMilli()
 }
 
 func init() {
