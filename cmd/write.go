@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/itsfabioroma/remarkable-cli/pkg/encoding/rm"
 	"github.com/itsfabioroma/remarkable-cli/pkg/model"
+	"github.com/itsfabioroma/remarkable-cli/pkg/render"
 	"github.com/spf13/cobra"
 )
 
@@ -116,8 +116,28 @@ as template and injecting a text block. The text appears as typed text.
 			targetPageID = pageIDs[len(pageIDs)-1]
 		}
 
-		// build the .rm file: clone template, strip strokes + old text, inject our text
-		rmData, err := buildTextPage(templateData, writeText)
+		// render text as pen strokes
+		// coordinates: reMarkable uses center-origin, ~-700 to +700 X, 0 to 1800 Y
+		// use Fineliner v2 (17), black, thickness 2.0 to match real strokes
+		textLines := render.RenderText(writeText, -500, 300, 5.0,
+			model.PenFineliner2, model.ColorBlack, 2.0)
+
+		if len(textLines) == 0 {
+			return fmt.Errorf("text produced no strokes")
+		}
+
+		// fix point widths to match real device strokes (width=16, pressure range 8-30)
+		for i := range textLines {
+			for j := range textLines[i].Points {
+				textLines[i].Points[j].Width = 16
+				textLines[i].Points[j].Pressure = 20
+				textLines[i].Points[j].Speed = 0
+			}
+		}
+
+		// strip template strokes, inject ours using correct parentID
+		// build .rm using real template (preserves all block structure, uses correct parentID)
+		rmData, err := rm.BuildPageFromTemplate(textLines, "5a7cebef-607a-495b-b747-32eb39d8c423", templateData)
 		if err != nil {
 			return fmt.Errorf("cannot build page: %w", err)
 		}
@@ -154,134 +174,6 @@ as template and injecting a text block. The text appears as typed text.
 	},
 }
 
-// buildTextPage clones a real .rm template, strips line/text blocks, injects new text
-func buildTextPage(template []byte, text string) ([]byte, error) {
-	if len(template) < 50 {
-		return nil, fmt.Errorf("template too short")
-	}
-
-	w := rm.NewWriter()
-	w.WriteHeader()
-
-	// parse template blocks — keep envelope, strip strokes and old text
-	pos := len(rm.V6Header)
-	for pos+8 < len(template) {
-		blockLen := binary.LittleEndian.Uint32(template[pos : pos+4])
-		payloadEnd := pos + 8 + int(blockLen)
-		if payloadEnd > len(template) {
-			break
-		}
-
-		bt := template[pos+7]
-
-		// skip LineItem and RootText blocks (we'll add our own text)
-		if rm.BlockType(bt) == rm.BlockSceneLineItem || rm.BlockType(bt) == rm.BlockRootText {
-			pos = payloadEnd
-			continue
-		}
-
-		// copy block as-is
-		w.WriteBytes(template[pos:payloadEnd])
-		pos = payloadEnd
-	}
-
-	// inject our RootText block with the text content
-	writeRootTextBlock(w, text)
-
-	return w.Bytes(), nil
-}
-
-// writeRootTextBlock creates a RootText block with plain text content
-// format reverse-engineered from real device .rm files
-func writeRootTextBlock(w *rm.Writer, text string) {
-	// build the text content sub-block
-	// structure: CRDT sequence with one item containing the full text
-	textBytes := []byte(text)
-
-	// inner-most: the text string with length prefix
-	// format: varuint(len) + 0x01 (is_ascii flag) + bytes
-	textPayload := rm.NewWriter()
-	textPayload.WriteVaruint(uint64(len(textBytes)))
-	textPayload.WriteByte(0x01) // is_ascii
-	textPayload.WriteBytes(textBytes)
-
-	// CRDT item: item_id, left_id, right_id, deleted, value
-	crdtItem := rm.NewWriter()
-	crdtItem.WriteTag(2, rm.TagID)
-	crdtItem.WriteCrdtId(rm.CrdtId{1, 15}) // item_id
-	crdtItem.WriteTag(3, rm.TagID)
-	crdtItem.WriteCrdtId(rm.CrdtId{0, 0}) // left_id
-	crdtItem.WriteTag(4, rm.TagID)
-	crdtItem.WriteCrdtId(rm.CrdtId{0, 0}) // right_id
-	crdtItem.WriteTag(5, rm.TagByte4)
-	crdtItem.WriteUint32(0) // deleted_length
-	crdtItem.WriteTag(6, rm.TagLength4)
-	crdtItem.WriteUint32(uint32(len(textPayload.Bytes())))
-	crdtItem.WriteBytes(textPayload.Bytes())
-
-	// wrap in item container: tag(0, Length4) + content
-	itemContainer := rm.NewWriter()
-	itemContainer.WriteTag(0, rm.TagLength4)
-	itemContainer.WriteUint32(uint32(len(crdtItem.Bytes())))
-	itemContainer.WriteBytes(crdtItem.Bytes())
-
-	// item list: varuint count + items
-	itemList := rm.NewWriter()
-	itemList.WriteVaruint(1) // 1 item
-	itemList.WriteBytes(itemContainer.Bytes())
-
-	// wrap in tag(1, Length4) — text items
-	textItems := rm.NewWriter()
-	textItems.WriteTag(1, rm.TagLength4)
-	textItems.WriteUint32(uint32(len(itemList.Bytes())))
-	textItems.WriteBytes(itemList.Bytes())
-
-	// paragraph styles: tag(2, Length4) — empty for plain text
-	paraStyles := rm.NewWriter()
-	paraStyles.WriteTag(1, rm.TagLength4)
-	paraStyles.WriteUint32(0) // empty
-
-	// text content wrapper: tag(1) items + tag(2) styles
-	contentWrapper := rm.NewWriter()
-	contentWrapper.WriteTag(1, rm.TagLength4)
-	contentWrapper.WriteUint32(uint32(len(textItems.Bytes())))
-	contentWrapper.WriteBytes(textItems.Bytes())
-	contentWrapper.WriteTag(2, rm.TagLength4)
-	contentWrapper.WriteUint32(uint32(len(paraStyles.Bytes())))
-	contentWrapper.WriteBytes(paraStyles.Bytes())
-
-	// full RootText payload: tag(1) block_id + tag(2) content + tag(3) position + tag(4) width
-	payload := rm.NewWriter()
-
-	// tag(1, TagID) block_id = {0, 0}
-	payload.WriteTag(1, rm.TagID)
-	payload.WriteCrdtId(rm.CrdtId{0, 0})
-
-	// tag(2, Length4) content
-	payload.WriteTag(2, rm.TagLength4)
-	payload.WriteUint32(uint32(len(contentWrapper.Bytes())))
-	payload.WriteBytes(contentWrapper.Bytes())
-
-	// tag(3, Length4) position: float64 x, float64 y
-	posData := rm.NewWriter()
-	posData.WriteFloat64(100.0) // x
-	posData.WriteFloat64(200.0) // y
-	payload.WriteTag(3, rm.TagLength4)
-	payload.WriteUint32(uint32(len(posData.Bytes())))
-	payload.WriteBytes(posData.Bytes())
-
-	// tag(4, Byte4) width
-	payload.WriteTag(4, rm.TagByte4)
-	payload.WriteUint32(936) // ~width in device units (matches real files)
-
-	// write block envelope: min=0, cur=1
-	w.WriteUint32(uint32(len(payload.Bytes())))
-	w.WriteByte(0)
-	w.WriteByte(0) // min_version
-	w.WriteByte(1) // cur_version
-	w.WriteByte(uint8(rm.BlockRootText))
-	w.WriteBytes(payload.Bytes())
-}
 
 type sshWriter interface {
 	RunCommand(string) (string, error)
