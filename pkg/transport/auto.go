@@ -10,28 +10,39 @@ import (
 )
 
 // AutoDetect tries transports in order: USB → SSH → Cloud
+// respects the host from SSHOptions (for WiFi connections)
 func AutoDetect(opts ...SSHOption) (Transport, error) {
-	// try USB Web Interface first (no dev mode needed)
-	if usbAvailable() {
-		return NewUSBTransport(), nil
+	// build a temp SSH transport to read the configured host
+	probe := NewSSHTransport(opts...)
+	host := probe.host
+
+	// try USB Web Interface first (only if on default USB IP)
+	if host == "10.11.99.1" {
+		if usbAvailable(host) {
+			return NewUSBTransport(), nil
+		}
 	}
 
-	// try SSH (dev mode required)
+	// try SSH at the configured host
 	ssh := NewSSHTransport(opts...)
 	if err := ssh.Connect(); err == nil {
 		return ssh, nil
 	}
 
-	// TODO: try cloud if tokens exist
+	// try cloud if tokens exist
+	cloud := NewCloudTransport()
+	if err := cloud.Connect(); err == nil {
+		return cloud, nil
+	}
 
 	return nil, model.NewCLIError(model.ErrTransportUnavailable, "",
-		"no reMarkable device found. Connect via USB cable or ensure SSH is available at 10.11.99.1")
+		fmt.Sprintf("no reMarkable found at %s. Check WiFi or connect via USB.", host))
 }
 
 // usbAvailable checks if the USB web interface is reachable
-func usbAvailable() bool {
+func usbAvailable(host string) bool {
 	client := &http.Client{Timeout: 1 * time.Second}
-	resp, err := client.Get("http://10.11.99.1/documents/")
+	resp, err := client.Get(fmt.Sprintf("http://%s/documents/", host))
 	if err != nil {
 		return false
 	}

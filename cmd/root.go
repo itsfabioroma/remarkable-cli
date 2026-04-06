@@ -41,10 +41,25 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&flagKeyPath, "key", "", "SSH private key path")
 }
 
-// getTransport connects to the device using the configured transport
+// getTransport connects to the device using saved config, flags, or auto-detect
 func getTransport() (transport.Transport, error) {
+	// merge saved config with CLI flags (flags override saved config)
+	host := flagHost
+	transportName := flagTransport
+
+	if cfg := loadConfig(); cfg != nil {
+		// use saved host if user didn't explicitly set --host
+		if !rootCmd.PersistentFlags().Changed("host") && cfg.Host != "" {
+			host = cfg.Host
+		}
+		// use saved transport if user didn't explicitly set --transport
+		if !rootCmd.PersistentFlags().Changed("transport") && cfg.Transport != "" {
+			transportName = cfg.Transport
+		}
+	}
+
 	opts := []transport.SSHOption{
-		transport.WithHost(flagHost),
+		transport.WithHost(host),
 	}
 	if flagPassword != "" {
 		opts = append(opts, transport.WithPassword(flagPassword))
@@ -53,7 +68,7 @@ func getTransport() (transport.Transport, error) {
 		opts = append(opts, transport.WithKeyPath(flagKeyPath))
 	}
 
-	switch flagTransport {
+	switch transportName {
 	case "ssh":
 		t := transport.NewSSHTransport(opts...)
 		if err := t.Connect(); err != nil {
@@ -80,7 +95,7 @@ func getTransport() (transport.Transport, error) {
 
 	default:
 		return nil, model.NewCLIError(model.ErrUnsupported, "",
-			fmt.Sprintf("unknown transport: %s", flagTransport))
+			fmt.Sprintf("unknown transport: %s", transportName))
 	}
 }
 
