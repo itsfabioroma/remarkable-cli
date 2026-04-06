@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,7 +11,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/itsfabioroma/remarkable-cli/pkg/encoding/rm"
 	"github.com/itsfabioroma/remarkable-cli/pkg/model"
-	"github.com/itsfabioroma/remarkable-cli/pkg/render"
 	"github.com/spf13/cobra"
 )
 
@@ -22,9 +22,9 @@ var (
 
 var writeCmd = &cobra.Command{
 	Use:   "write <notebook>",
-	Short: "Write text as handwriting on a notebook page",
-	Long: `Converts text into pen strokes and writes them to a notebook page.
-The text appears as handwritten fineliner strokes on the device.
+	Short: "Write text on a notebook page",
+	Long: `Writes text onto a notebook page by cloning a real page from the device
+as template and injecting a text block. The text appears as typed text.
 
   remarkable write "My Notebook" --text "Meeting notes here"
   remarkable write "My Notebook" --text "Page 2 content" --page 2
@@ -35,7 +35,6 @@ The text appears as handwritten fineliner strokes on the device.
 			return fmt.Errorf("--text is required")
 		}
 
-		// need SSH for filesystem access
 		sshT, err := getSSH()
 		if err != nil {
 			return err
@@ -77,77 +76,55 @@ The text appears as handwritten fineliner strokes on the device.
 		json.Unmarshal(contentData, &content)
 		pageIDs := content.PageIDs()
 
-		// determine target page UUID
-		var targetPageID string
-
-		if writeNewPage {
-			// create a new page
-			targetPageID = uuid.New().String()
-			pageIDs = append(pageIDs, targetPageID)
-
-			// update .content with new page
-			if err := updateContentPages(sshT, doc.ID, contentData, targetPageID); err != nil {
-				outputError(err)
-				return err
-			}
-
-		} else if writePage > 0 {
-			// specific page number (1-indexed)
-			idx := writePage - 1
-			if idx < 0 || idx >= len(pageIDs) {
-				err := model.NewCLIError(model.ErrNotFound, "ssh",
-					fmt.Sprintf("page %d does not exist (notebook has %d pages)", writePage, len(pageIDs)))
-				outputError(err)
-				return err
-			}
-			targetPageID = pageIDs[idx]
-
-		} else {
-			// default: last page
-			if len(pageIDs) == 0 {
-				err := model.NewCLIError(model.ErrNotFound, "ssh", "notebook has no pages")
-				outputError(err)
-				return err
-			}
-			targetPageID = pageIDs[len(pageIDs)-1]
-		}
-
-		// convert text to pen strokes
-		lines := render.RenderText(writeText, 100, 200, 3.0,
-			model.PenFineliner, model.ColorBlack, 1.5)
-
-		if len(lines) == 0 {
-			return fmt.Errorf("text produced no strokes")
-		}
-
-		// grab a real .rm file from this notebook as template
-		// this ensures all non-stroke blocks match what the device expects
-		var template []byte
+		// grab a real .rm from this notebook as template
+		var templateData []byte
 		for _, pid := range pageIDs {
 			rc, err := sshT.ReadFile(doc.ID, pid+".rm")
 			if err != nil {
 				continue
 			}
-			template, _ = io.ReadAll(rc)
+			templateData, _ = io.ReadAll(rc)
 			rc.Close()
-			if len(template) > 0 {
-				// strip strokes from template, keep envelope blocks
-				template, _ = rm.ParseBlobToTemplate(template)
+			if len(templateData) > 100 {
 				break
 			}
 		}
 
-		// build the .rm v6 file using real device template
-		rmData, err := rm.BuildPageFromTemplate(lines, "5a7cebef-607a-495b-b747-32eb39d8c423", template)
-		if err != nil {
-			return fmt.Errorf("cannot build .rm page: %w", err)
+		if templateData == nil {
+			return fmt.Errorf("no existing pages to use as template")
 		}
 
-		// write the .rm file to device
+		// determine target page UUID
+		var targetPageID string
+		if writeNewPage {
+			targetPageID = uuid.New().String()
+			if err := updateContentPages(sshT, doc.ID, contentData, targetPageID); err != nil {
+				outputError(err)
+				return err
+			}
+			pageIDs = append(pageIDs, targetPageID)
+		} else if writePage > 0 {
+			idx := writePage - 1
+			if idx < 0 || idx >= len(pageIDs) {
+				return fmt.Errorf("page %d does not exist (notebook has %d pages)", writePage, len(pageIDs))
+			}
+			targetPageID = pageIDs[idx]
+		} else {
+			if len(pageIDs) == 0 {
+				return fmt.Errorf("notebook has no pages")
+			}
+			targetPageID = pageIDs[len(pageIDs)-1]
+		}
+
+		// build the .rm file: clone template, strip strokes + old text, inject our text
+		rmData, err := buildTextPage(templateData, writeText)
+		if err != nil {
+			return fmt.Errorf("cannot build page: %w", err)
+		}
+
+		// write to device
 		rmPath := filepath.Join("/home/root/.local/share/remarkable/xochitl",
 			doc.ID, targetPageID+".rm")
-
-		// ensure the doc directory exists
 		sshT.RunCommand(fmt.Sprintf("mkdir -p /home/root/.local/share/remarkable/xochitl/%s", doc.ID))
 
 		if err := sshT.WriteRawFile(rmPath, rmData); err != nil {
@@ -155,7 +132,7 @@ The text appears as handwritten fineliner strokes on the device.
 			return err
 		}
 
-		// restart xochitl so it picks up the new/modified page
+		// restart xochitl
 		sshT.RunCommand("systemctl restart xochitl")
 
 		pageNum := len(pageIDs)
@@ -164,26 +141,148 @@ The text appears as handwritten fineliner strokes on the device.
 		}
 
 		output(map[string]any{
-			"id":       doc.ID,
-			"name":     doc.Name,
-			"pageId":   targetPageID,
-			"page":     pageNum,
-			"strokes":  len(lines),
-			"bytes":    len(rmData),
-			"newPage":  writeNewPage,
-			"status":   "written",
+			"id":      doc.ID,
+			"name":    doc.Name,
+			"pageId":  targetPageID,
+			"page":    pageNum,
+			"text":    writeText,
+			"bytes":   len(rmData),
+			"newPage": writeNewPage,
+			"status":  "written",
 		})
-
-		if isTerminal() {
-			fmt.Printf("Wrote %d strokes to page %d of %q (%d bytes)\n",
-				len(lines), pageNum, doc.Name, len(rmData))
-		}
-
 		return nil
 	},
 }
 
-// updateContentPages adds a new page to the .content file with proper CRDT fields
+// buildTextPage clones a real .rm template, strips line/text blocks, injects new text
+func buildTextPage(template []byte, text string) ([]byte, error) {
+	if len(template) < 50 {
+		return nil, fmt.Errorf("template too short")
+	}
+
+	w := rm.NewWriter()
+	w.WriteHeader()
+
+	// parse template blocks — keep envelope, strip strokes and old text
+	pos := len(rm.V6Header)
+	for pos+8 < len(template) {
+		blockLen := binary.LittleEndian.Uint32(template[pos : pos+4])
+		payloadEnd := pos + 8 + int(blockLen)
+		if payloadEnd > len(template) {
+			break
+		}
+
+		bt := template[pos+7]
+
+		// skip LineItem and RootText blocks (we'll add our own text)
+		if rm.BlockType(bt) == rm.BlockSceneLineItem || rm.BlockType(bt) == rm.BlockRootText {
+			pos = payloadEnd
+			continue
+		}
+
+		// copy block as-is
+		w.WriteBytes(template[pos:payloadEnd])
+		pos = payloadEnd
+	}
+
+	// inject our RootText block with the text content
+	writeRootTextBlock(w, text)
+
+	return w.Bytes(), nil
+}
+
+// writeRootTextBlock creates a RootText block with plain text content
+// format reverse-engineered from real device .rm files
+func writeRootTextBlock(w *rm.Writer, text string) {
+	// build the text content sub-block
+	// structure: CRDT sequence with one item containing the full text
+	textBytes := []byte(text)
+
+	// inner-most: the text string with length prefix
+	// format: varuint(len) + 0x01 (is_ascii flag) + bytes
+	textPayload := rm.NewWriter()
+	textPayload.WriteVaruint(uint64(len(textBytes)))
+	textPayload.WriteByte(0x01) // is_ascii
+	textPayload.WriteBytes(textBytes)
+
+	// CRDT item: item_id, left_id, right_id, deleted, value
+	crdtItem := rm.NewWriter()
+	crdtItem.WriteTag(2, rm.TagID)
+	crdtItem.WriteCrdtId(rm.CrdtId{1, 15}) // item_id
+	crdtItem.WriteTag(3, rm.TagID)
+	crdtItem.WriteCrdtId(rm.CrdtId{0, 0}) // left_id
+	crdtItem.WriteTag(4, rm.TagID)
+	crdtItem.WriteCrdtId(rm.CrdtId{0, 0}) // right_id
+	crdtItem.WriteTag(5, rm.TagByte4)
+	crdtItem.WriteUint32(0) // deleted_length
+	crdtItem.WriteTag(6, rm.TagLength4)
+	crdtItem.WriteUint32(uint32(len(textPayload.Bytes())))
+	crdtItem.WriteBytes(textPayload.Bytes())
+
+	// wrap in item container: tag(0, Length4) + content
+	itemContainer := rm.NewWriter()
+	itemContainer.WriteTag(0, rm.TagLength4)
+	itemContainer.WriteUint32(uint32(len(crdtItem.Bytes())))
+	itemContainer.WriteBytes(crdtItem.Bytes())
+
+	// item list: varuint count + items
+	itemList := rm.NewWriter()
+	itemList.WriteVaruint(1) // 1 item
+	itemList.WriteBytes(itemContainer.Bytes())
+
+	// wrap in tag(1, Length4) — text items
+	textItems := rm.NewWriter()
+	textItems.WriteTag(1, rm.TagLength4)
+	textItems.WriteUint32(uint32(len(itemList.Bytes())))
+	textItems.WriteBytes(itemList.Bytes())
+
+	// paragraph styles: tag(2, Length4) — empty for plain text
+	paraStyles := rm.NewWriter()
+	paraStyles.WriteTag(1, rm.TagLength4)
+	paraStyles.WriteUint32(0) // empty
+
+	// text content wrapper: tag(1) items + tag(2) styles
+	contentWrapper := rm.NewWriter()
+	contentWrapper.WriteTag(1, rm.TagLength4)
+	contentWrapper.WriteUint32(uint32(len(textItems.Bytes())))
+	contentWrapper.WriteBytes(textItems.Bytes())
+	contentWrapper.WriteTag(2, rm.TagLength4)
+	contentWrapper.WriteUint32(uint32(len(paraStyles.Bytes())))
+	contentWrapper.WriteBytes(paraStyles.Bytes())
+
+	// full RootText payload: tag(1) block_id + tag(2) content + tag(3) position + tag(4) width
+	payload := rm.NewWriter()
+
+	// tag(1, TagID) block_id = {0, 0}
+	payload.WriteTag(1, rm.TagID)
+	payload.WriteCrdtId(rm.CrdtId{0, 0})
+
+	// tag(2, Length4) content
+	payload.WriteTag(2, rm.TagLength4)
+	payload.WriteUint32(uint32(len(contentWrapper.Bytes())))
+	payload.WriteBytes(contentWrapper.Bytes())
+
+	// tag(3, Length4) position: float64 x, float64 y
+	posData := rm.NewWriter()
+	posData.WriteFloat64(100.0) // x
+	posData.WriteFloat64(200.0) // y
+	payload.WriteTag(3, rm.TagLength4)
+	payload.WriteUint32(uint32(len(posData.Bytes())))
+	payload.WriteBytes(posData.Bytes())
+
+	// tag(4, Byte4) width
+	payload.WriteTag(4, rm.TagByte4)
+	payload.WriteUint32(936) // ~width in device units (matches real files)
+
+	// write block envelope: min=0, cur=1
+	w.WriteUint32(uint32(len(payload.Bytes())))
+	w.WriteByte(0)
+	w.WriteByte(0) // min_version
+	w.WriteByte(1) // cur_version
+	w.WriteByte(uint8(rm.BlockRootText))
+	w.WriteBytes(payload.Bytes())
+}
+
 type sshWriter interface {
 	RunCommand(string) (string, error)
 	WriteRawFile(string, []byte) error
@@ -193,16 +292,14 @@ func updateContentPages(sshT sshWriter, docID string, originalContent []byte, ne
 	var raw map[string]any
 	json.Unmarshal(originalContent, &raw)
 
-	// generate a CRDT timestamp: use page count + 1 as sequence
 	pageCount := 0
 	if pc, ok := raw["pageCount"].(float64); ok {
 		pageCount = int(pc)
 	}
 	seq := pageCount + 1
 	timestamp := fmt.Sprintf("1:%d", seq)
-	now := fmt.Sprintf("%d", timeNowMs())
+	now := fmt.Sprintf("%d", time.Now().UnixMilli())
 
-	// compute sort key: append "z" to the last page's idx to sort after it
 	lastIdx := "ba"
 	if cPages, ok := raw["cPages"].(map[string]any); ok {
 		pages, _ := cPages["pages"].([]any)
@@ -210,24 +307,17 @@ func updateContentPages(sshT sshWriter, docID string, originalContent []byte, ne
 			lastPage, _ := pages[len(pages)-1].(map[string]any)
 			if idx, ok := lastPage["idx"].(map[string]any); ok {
 				if v, ok := idx["value"].(string); ok {
-					lastIdx = v + "a" // lexicographically after
+					lastIdx = v + "a"
 				}
 			}
 		}
 	}
 
-	// build proper page entry matching device format
 	newPage := map[string]any{
-		"id": newPageID,
-		"idx": map[string]any{
-			"timestamp": timestamp,
-			"value":     lastIdx,
-		},
-		"template": map[string]any{
-			"timestamp": timestamp,
-			"value":     "Blank",
-		},
-		"modifed": now, // yes, the device misspells "modified"
+		"id":      newPageID,
+		"idx":     map[string]any{"timestamp": timestamp, "value": lastIdx},
+		"template": map[string]any{"timestamp": timestamp, "value": "Blank"},
+		"modifed": now,
 	}
 
 	if cPages, ok := raw["cPages"].(map[string]any); ok {
@@ -241,24 +331,17 @@ func updateContentPages(sshT sshWriter, docID string, originalContent []byte, ne
 		raw["pages"] = pages
 	}
 
-	// update page count
 	raw["pageCount"] = pageCount + 1
 
-	// write back via SFTP (avoids shell escaping issues)
 	newContent, _ := json.MarshalIndent(raw, "", "    ")
 	contentPath := filepath.Join("/home/root/.local/share/remarkable/xochitl", docID+".content")
-
 	return sshT.WriteRawFile(contentPath, newContent)
 }
 
-func timeNowMs() int64 {
-	return time.Now().UnixMilli()
-}
-
 func init() {
-	writeCmd.Flags().StringVar(&writeText, "text", "", "text to write as handwriting (required)")
-	writeCmd.Flags().IntVar(&writePage, "page", 0, "page number to write on (1-indexed, 0=last page)")
-	writeCmd.Flags().BoolVar(&writeNewPage, "new-page", false, "create a new page for the text")
+	writeCmd.Flags().StringVar(&writeText, "text", "", "text to write (required)")
+	writeCmd.Flags().IntVar(&writePage, "page", 0, "page number (1-indexed, 0=last)")
+	writeCmd.Flags().BoolVar(&writeNewPage, "new-page", false, "create a new page")
 	writeCmd.MarkFlagRequired("text")
 	rootCmd.AddCommand(writeCmd)
 }
