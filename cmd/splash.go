@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"bytes"
 	"fmt"
 	"image"
+	"image/draw"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -16,13 +18,20 @@ import (
 	_ "image/jpeg"
 )
 
-// splash screen paths on device
+// device paths
 const (
-	splashDir  = "/usr/share/remarkable"
+	splashDir   = "/usr/share/remarkable"
 	carouselDir = "/usr/share/remarkable/carousel"
+	backupDir   = "/usr/share/remarkable/.splash-backup"
 )
 
-// valid splash screen names
+// Paper Pro dimensions (portrait)
+const (
+	ppSplashW = 1620
+	ppSplashH = 2160
+)
+
+// splash screen names → filenames on device
 var splashNames = map[string]string{
 	"sleep":    "suspended.png",
 	"poweroff": "poweroff.png",
@@ -32,16 +41,24 @@ var splashNames = map[string]string{
 }
 
 var splashCmd = &cobra.Command{
-	Use:   "splash <image> [screen]",
-	Short: "Change a splash screen on the device",
-	Long: `Replace a splash screen image. Screen names: sleep, poweroff, starting, battery, reboot.
-Default: sleep. Paper Pro dimensions: 1620x2160. Image is auto-resized to fit.
-Requires SSH transport.`,
+	Use:   "splash",
+	Short: "Manage device splash screens",
+}
+
+// --- splash set ---
+
+var splashSetCmd = &cobra.Command{
+	Use:   "set <image> [screen]",
+	Short: "Replace a splash screen",
+	Long: `Replace a splash screen. Auto-resizes to fit Paper Pro (1620x2160).
+Backs up the original first. Accepts PNG, JPG.
+
+Screens: sleep (default), poweroff, starting, battery, reboot`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		imagePath := args[0]
 
-		// which screen to replace
+		// which screen
 		screenName := "sleep"
 		if len(args) > 1 {
 			screenName = args[1]
@@ -49,33 +66,20 @@ Requires SSH transport.`,
 
 		targetFile, ok := splashNames[screenName]
 		if !ok {
-			validNames := make([]string, 0, len(splashNames))
-			for k := range splashNames {
-				validNames = append(validNames, k)
-			}
+			names := sortedKeys(splashNames)
 			err := model.NewCLIError(model.ErrUnsupported, "",
-				fmt.Sprintf("unknown screen %q. Valid: %s", screenName, strings.Join(validNames, ", ")))
+				fmt.Sprintf("unknown screen %q. Valid: %s", screenName, strings.Join(names, ", ")))
 			outputError(err)
 			return err
 		}
 
-		// connect via SSH (required for filesystem write)
-		t, err := getTransport()
+		sshT, err := getSSH()
 		if err != nil {
-			outputError(err)
 			return err
 		}
-		defer t.Close()
+		defer sshT.Close()
 
-		sshT, ok := t.(*transport.SSHTransport)
-		if !ok {
-			err := model.NewCLIError(model.ErrUnsupported, t.Name(),
-				"splash requires SSH transport (use --transport ssh)")
-			outputError(err)
-			return err
-		}
-
-		// open and decode the source image
+		// decode source image
 		srcFile, err := os.Open(imagePath)
 		if err != nil {
 			return fmt.Errorf("cannot open image: %w", err)
@@ -87,56 +91,44 @@ Requires SSH transport.`,
 			return fmt.Errorf("cannot decode image: %w", err)
 		}
 
-		// convert to PNG in a temp file
-		tmpFile, err := os.CreateTemp("", "remarkable-splash-*.png")
-		if err != nil {
-			return err
-		}
-		defer os.Remove(tmpFile.Name())
-		defer tmpFile.Close()
+		// resize to device dimensions (fit, center, white background)
+		resized := fitToScreen(srcImg, ppSplashW, ppSplashH)
 
-		if err := png.Encode(tmpFile, srcImg); err != nil {
+		// encode to PNG
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, resized); err != nil {
 			return fmt.Errorf("cannot encode PNG: %w", err)
 		}
-		tmpFile.Close()
 
-		// remount root filesystem as read-write
-		_, err = sshT.RunCommand("mount -o remount,rw /")
-		if err != nil {
-			return model.NewCLIError(model.ErrPermissionDenied, "ssh",
-				"cannot remount root filesystem as read-write")
-		}
-
-		// upload via SCP
+		// remount rw + backup original
+		sshT.RunCommand("mount -o remount,rw /")
 		remotePath := filepath.Join(splashDir, targetFile)
-		pngData, err := os.ReadFile(tmpFile.Name())
-		if err != nil {
-			return err
-		}
+		sshT.RunCommand(fmt.Sprintf("mkdir -p %s && cp -n %s %s/ 2>/dev/null; true", backupDir, remotePath, backupDir))
 
-		if err := sshT.WriteRawFile(remotePath, pngData); err != nil {
+		// upload
+		if err := sshT.WriteRawFile(remotePath, buf.Bytes()); err != nil {
 			outputError(err)
 			return err
 		}
 
-		// if replacing sleep screen, disable carousel overlays
+		// disable carousel overlay for sleep screen
 		if screenName == "sleep" {
-			sshT.RunCommand(fmt.Sprintf("mkdir -p %s/backup && mv %s/sleep_Illustration_*.png %s/backup/ 2>/dev/null; true",
+			sshT.RunCommand(fmt.Sprintf("mkdir -p %s/.backup && mv %s/sleep_Illustration_*.png %s/.backup/ 2>/dev/null; true",
 				carouselDir, carouselDir, carouselDir))
 		}
 
-		bounds := srcImg.Bounds()
+		bounds := resized.Bounds()
 		output(map[string]any{
-			"screen":     screenName,
-			"file":       targetFile,
-			"sourcePath": imagePath,
-			"width":      bounds.Dx(),
-			"height":     bounds.Dy(),
-			"status":     "replaced",
+			"screen":  screenName,
+			"file":    targetFile,
+			"source":  filepath.Base(imagePath),
+			"width":   bounds.Dx(),
+			"height":  bounds.Dy(),
+			"status":  "replaced",
 		})
 
 		if !flagJSON && isTerminal() {
-			fmt.Printf("Splash screen '%s' replaced with %s (%dx%d)\n",
+			fmt.Printf("Set '%s' splash to %s (resized to %dx%d)\n",
 				screenName, filepath.Base(imagePath), bounds.Dx(), bounds.Dy())
 		}
 
@@ -144,6 +136,183 @@ Requires SSH transport.`,
 	},
 }
 
+// --- splash list ---
+
+var splashListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List current splash screens on device",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sshT, err := getSSH()
+		if err != nil {
+			return err
+		}
+		defer sshT.Close()
+
+		// list splash files with sizes
+		raw, _ := sshT.RunCommand(fmt.Sprintf("ls -la %s/*.png 2>/dev/null", splashDir))
+
+		var screens []map[string]any
+		for name, file := range splashNames {
+			info := map[string]any{"screen": name, "file": file, "exists": false}
+
+			// check if file exists in ls output
+			if strings.Contains(raw, file) {
+				info["exists"] = true
+			}
+
+			// check if backup exists
+			backupRaw, _ := sshT.RunCommand(fmt.Sprintf("test -f %s/%s && echo yes || echo no", backupDir, file))
+			info["hasBackup"] = strings.TrimSpace(backupRaw) == "yes"
+
+			screens = append(screens, info)
+		}
+
+		output(screens)
+		return nil
+	},
+}
+
+// --- splash restore ---
+
+var splashRestoreCmd = &cobra.Command{
+	Use:   "restore [screen]",
+	Short: "Restore original splash screen from backup",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		screenName := "sleep"
+		if len(args) > 0 {
+			screenName = args[0]
+		}
+
+		targetFile, ok := splashNames[screenName]
+		if !ok {
+			return fmt.Errorf("unknown screen: %s", screenName)
+		}
+
+		sshT, err := getSSH()
+		if err != nil {
+			return err
+		}
+		defer sshT.Close()
+
+		sshT.RunCommand("mount -o remount,rw /")
+
+		// restore from backup
+		backupPath := filepath.Join(backupDir, targetFile)
+		remotePath := filepath.Join(splashDir, targetFile)
+
+		check, _ := sshT.RunCommand(fmt.Sprintf("test -f %s && echo yes || echo no", backupPath))
+		if strings.TrimSpace(check) != "yes" {
+			err := model.NewCLIError(model.ErrNotFound, "ssh",
+				fmt.Sprintf("no backup found for '%s'", screenName))
+			outputError(err)
+			return err
+		}
+
+		sshT.RunCommand(fmt.Sprintf("cp %s %s", backupPath, remotePath))
+
+		// restore carousel if sleep
+		if screenName == "sleep" {
+			sshT.RunCommand(fmt.Sprintf("mv %s/.backup/sleep_Illustration_*.png %s/ 2>/dev/null; true",
+				carouselDir, carouselDir))
+		}
+
+		output(map[string]any{
+			"screen": screenName,
+			"status": "restored",
+		})
+
+		if !flagJSON && isTerminal() {
+			fmt.Printf("Restored original '%s' splash screen\n", screenName)
+		}
+
+		return nil
+	},
+}
+
+// --- helpers ---
+
+// getSSH returns an SSH transport or error
+func getSSH() (*transport.SSHTransport, error) {
+	t, err := getTransport()
+	if err != nil {
+		outputError(err)
+		return nil, err
+	}
+
+	sshT, ok := t.(*transport.SSHTransport)
+	if !ok {
+		t.Close()
+		err := model.NewCLIError(model.ErrUnsupported, t.Name(),
+			"this command requires SSH transport (use --transport ssh)")
+		outputError(err)
+		return nil, err
+	}
+
+	return sshT, nil
+}
+
+// fitToScreen resizes an image to fit within target dimensions, centered on white background
+func fitToScreen(src image.Image, targetW, targetH int) image.Image {
+	srcBounds := src.Bounds()
+	srcW := srcBounds.Dx()
+	srcH := srcBounds.Dy()
+
+	// if already correct size, return as-is
+	if srcW == targetW && srcH == targetH {
+		return src
+	}
+
+	// calculate scale to fit (maintain aspect ratio)
+	scaleW := float64(targetW) / float64(srcW)
+	scaleH := float64(targetH) / float64(srcH)
+	scale := scaleW
+	if scaleH < scaleW {
+		scale = scaleH
+	}
+
+	newW := int(float64(srcW) * scale)
+	newH := int(float64(srcH) * scale)
+
+	// simple nearest-neighbor resize
+	resized := image.NewRGBA(image.Rect(0, 0, newW, newH))
+	for y := 0; y < newH; y++ {
+		for x := 0; x < newW; x++ {
+			srcX := int(float64(x) / scale)
+			srcY := int(float64(y) / scale)
+			if srcX >= srcW {
+				srcX = srcW - 1
+			}
+			if srcY >= srcH {
+				srcY = srcH - 1
+			}
+			resized.Set(x, y, src.At(srcBounds.Min.X+srcX, srcBounds.Min.Y+srcY))
+		}
+	}
+
+	// center on white background
+	canvas := image.NewRGBA(image.Rect(0, 0, targetW, targetH))
+	draw.Draw(canvas, canvas.Bounds(), image.White, image.Point{}, draw.Src)
+
+	offsetX := (targetW - newW) / 2
+	offsetY := (targetH - newH) / 2
+	draw.Draw(canvas, image.Rect(offsetX, offsetY, offsetX+newW, offsetY+newH),
+		resized, image.Point{}, draw.Over)
+
+	return canvas
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 func init() {
+	splashCmd.AddCommand(splashSetCmd)
+	splashCmd.AddCommand(splashListCmd)
+	splashCmd.AddCommand(splashRestoreCmd)
 	rootCmd.AddCommand(splashCmd)
 }
