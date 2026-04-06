@@ -38,7 +38,27 @@ type CPages struct {
 
 // CPage is a single page entry in cPages format
 type CPage struct {
-	ID string `json:"id"`
+	ID         string         `json:"id"`
+	Idx        map[string]any `json:"idx,omitempty"`
+	TemplateV  map[string]any `json:"template,omitempty"`
+}
+
+// Template returns the template name for this page
+func (p *CPage) Template() string {
+	if p.TemplateV != nil {
+		if v, ok := p.TemplateV["value"].(string); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// GetCPages returns the cPages list (or empty slice)
+func (c *Content) GetCPages() []CPage {
+	if c.CPages != nil {
+		return c.CPages.Pages
+	}
+	return nil
 }
 
 // PageIDs returns all page UUIDs, handling both old and new content format
