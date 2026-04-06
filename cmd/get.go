@@ -42,12 +42,15 @@ var getCmd = &cobra.Command{
 		}
 
 		doc := matches[0]
-		ext := ".pdf"
-		if doc.FileType == "epub" {
-			ext = ".epub"
+
+		// determine file type — default to pdf
+		fileType := doc.FileType
+		if fileType == "" {
+			fileType = "pdf"
 		}
 
-		rc, err := t.ReadFile(doc.ID, doc.FileType)
+		ext := "." + fileType
+		rc, err := t.ReadFile(doc.ID, fileType)
 		if err != nil {
 			outputError(err)
 			return err

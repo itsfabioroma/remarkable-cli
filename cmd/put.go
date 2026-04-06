@@ -85,8 +85,8 @@ var putCmd = &cobra.Command{
 			return err
 		}
 
-		// sync root index if cloud transport (makes new doc visible)
-		syncCloudRoot(t)
+		// finalize cloud upload (builds doc + root indexes)
+		syncCloudDoc(t, docID)
 
 		output(map[string]any{"id": docID, "name": visibleName, "fileType": fileType, "status": "uploaded"})
 		return nil

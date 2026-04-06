@@ -52,7 +52,7 @@ var mkdirCmd = &cobra.Command{
 			return err
 		}
 
-		syncCloudRoot(t)
+		syncCloudDoc(t, docID)
 
 		output(map[string]any{"id": docID, "name": name, "parent": parentID, "status": "created"})
 		return nil

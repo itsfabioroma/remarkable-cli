@@ -123,7 +123,7 @@ var fetchCmd = &cobra.Command{
 			return err
 		}
 
-		syncCloudRoot(t)
+		syncCloudDoc(t, docID)
 
 		output(map[string]any{
 			"id":     docID,
