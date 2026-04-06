@@ -18,6 +18,7 @@ import (
 	"github.com/fabioroma/remarkable-cli/pkg/model"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 )
 
 // xochitl data directory on reMarkable devices
@@ -80,24 +81,32 @@ func (t *SSHTransport) Connect() error {
 		Timeout:         5 * time.Second,
 	}
 
-	// auth methods
+	// auth methods — order: explicit key, default keys, agent, password
 	var authMethods []ssh.AuthMethod
 
-	// try SSH key first
+	// explicit key path
 	if t.keyPath != "" {
 		if method, err := keyAuth(t.keyPath); err == nil {
 			authMethods = append(authMethods, method)
 		}
 	}
 
-	// try default key locations
+	// default key locations
 	if t.keyPath == "" {
 		home, _ := os.UserHomeDir()
-		for _, name := range []string{"id_rsa", "id_ed25519"} {
+		for _, name := range []string{"id_ed25519", "id_rsa"} {
 			path := filepath.Join(home, ".ssh", name)
 			if method, err := keyAuth(path); err == nil {
 				authMethods = append(authMethods, method)
 			}
+		}
+	}
+
+	// SSH agent (macOS keychain, ssh-agent)
+	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
+		if conn, err := net.Dial("unix", sock); err == nil {
+			agentClient := agent.NewClient(conn)
+			authMethods = append(authMethods, ssh.PublicKeysCallback(agentClient.Signers))
 		}
 	}
 
@@ -247,6 +256,22 @@ func (t *SSHTransport) ReadFile(docID, relPath string) (io.ReadCloser, error) {
 	return f, nil
 }
 
+// WriteRawFile writes arbitrary bytes to an absolute path on the device
+func (t *SSHTransport) WriteRawFile(remotePath string, data []byte) error {
+	dir := filepath.Dir(remotePath)
+	t.sftpClient.MkdirAll(dir)
+
+	f, err := t.sftpClient.Create(remotePath)
+	if err != nil {
+		return model.NewCLIError(model.ErrPermissionDenied, "ssh",
+			fmt.Sprintf("cannot write %s: %v", remotePath, err))
+	}
+	defer f.Close()
+
+	_, err = f.Write(data)
+	return err
+}
+
 // WriteFile writes a file into a document's space
 func (t *SSHTransport) WriteFile(docID, relPath string, r io.Reader) error {
 	fullPath := filepath.Join(xochitlPath, docID, relPath)
@@ -294,7 +319,7 @@ func (t *SSHTransport) DeleteDocument(docID string) error {
 // via /proc/[xochitl_pid]/mem at the mapped address from /proc/[pid]/maps.
 func (t *SSHTransport) Screenshot() (image.Image, error) {
 	// step 1: find xochitl PID
-	pid, err := t.runCommand("pidof xochitl")
+	pid, err := t.RunCommand("pidof xochitl")
 	if err != nil {
 		return nil, model.NewCLIError(model.ErrUnsupported, "ssh",
 			fmt.Sprintf("xochitl not running: %v", err))
@@ -302,7 +327,7 @@ func (t *SSHTransport) Screenshot() (image.Image, error) {
 	pid = strings.TrimSpace(pid)
 
 	// step 2: check if /dev/fb0 exists (RM2) or /dev/dri/card0 (Paper Pro)
-	hasFb0, _ := t.runCommand("test -e /dev/fb0 && echo yes || echo no")
+	hasFb0, _ := t.RunCommand("test -e /dev/fb0 && echo yes || echo no")
 	hasFb0 = strings.TrimSpace(hasFb0)
 
 	if hasFb0 == "yes" {
@@ -364,8 +389,8 @@ func bgraToImage(data []byte, width, height int) image.Image {
 	return img
 }
 
-// runCommand executes a command over SSH and returns stdout
-func (t *SSHTransport) runCommand(cmd string) (string, error) {
+// RunCommand executes a command over SSH and returns stdout
+func (t *SSHTransport) RunCommand(cmd string) (string, error) {
 	session, err := t.sshClient.NewSession()
 	if err != nil {
 		return "", err
