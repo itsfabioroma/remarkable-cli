@@ -88,6 +88,49 @@ remarkable splash restore                 # restore original
 ```
 Screens: sleep, poweroff, starting, battery, reboot. Auto-resizes to 1620x2160. Requires SSH.
 
+### Read document text
+```bash
+remarkable read "Document Name"              # full text from PDF/EPUB
+remarkable read "Document Name" --page 5     # single page
+```
+Extracts text from PDFs (via pdftotext) and EPUBs (built-in). Returns searchable text. Works over SSH and cloud.
+
+### Extract highlights
+```bash
+remarkable highlights "Document Name"           # all highlights as JSON
+remarkable highlights "Document Name" --page 5  # single page
+remarkable highlights "Document Name" --markdown # as markdown blockquotes
+```
+Parses .highlights/ folder, merges adjacent highlights (3-char gap tolerance). Requires SSH.
+
+### Backup
+```bash
+remarkable backup                   # structured backup to ./remarkable-backup/
+remarkable backup /path/to/dir      # custom destination
+remarkable backup --raw             # raw xochitl tar.gz
+```
+Downloads all documents preserving folder structure. Renders notebook pages as PNG. Requires SSH.
+
+### Search
+```bash
+remarkable search "meeting"          # fuzzy name search
+remarkable search "PMF" --tag work   # filter by tag
+```
+Case-insensitive substring search across document names. Works over SSH and cloud.
+
+### Fetch URL
+```bash
+remarkable fetch https://example.com/paper.pdf
+remarkable fetch https://arxiv.org/pdf/2401.12345.pdf "Papers"
+```
+Downloads a PDF from a URL and uploads to the device in one command. Direct PDF URLs only.
+
+### Document info
+```bash
+remarkable info "Document Name"
+```
+Shows: name, path, type, pages, tags, last modified, ID. Quick lookup for agents.
+
 ### Device management
 ```bash
 remarkable password "newpass"             # change SSH password
@@ -102,11 +145,11 @@ remarkable disconnect                     # forget device
 | Transport | Speed | Capabilities |
 |-----------|-------|-------------|
 | SSH | ~1s | Everything |
-| Cloud | ~3s | ls only (read-only fallback) |
+| Cloud | ~3s | Read-only: ls, get, export, read, search |
 
-SSH-only: write, watch, splash, password, setup-key, pages, tag, put, rm, mv, mkdir
+SSH-only: write, watch, splash, password, setup-key, pages, tag, put, rm, mv, mkdir, highlights, backup, fetch
 
-SSH preferred, cloud fallback: ls, export, get
+SSH preferred, cloud fallback: ls, export, get, read, search
 
 All commands auto-detect the best transport. If SSH is unavailable (device sleeping), ls/export/get fall back to cloud automatically. No manual transport selection needed.
 

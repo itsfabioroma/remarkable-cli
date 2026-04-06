@@ -46,10 +46,18 @@ remarkable watch --on-change "cmd {id}" # live change monitoring
 remarkable splash set art.png          # change sleep screen
 remarkable splash list                 # see current splash screens
 remarkable splash restore              # restore originals
-remarkable password "newpass"          # change SSH password
-remarkable setup-key                   # install SSH key (passwordless)
-remarkable auth                        # set up cloud access
-remarkable disconnect                  # forget device
+remarkable read "My Notes"              # extract text from PDF/EPUB
+remarkable highlights "My Notes"        # extract highlights as markdown
+remarkable backup                       # full structured backup
+remarkable backup --raw                 # raw device backup
+remarkable search "meeting"             # search by name
+remarkable search "PMF" --tag work      # search with tag filter
+remarkable fetch https://url/paper.pdf  # download URL → upload to device
+remarkable info "My Notes"              # detailed doc info
+remarkable password "newpass"           # change SSH password
+remarkable setup-key                    # install SSH key (passwordless)
+remarkable auth                         # set up cloud access
+remarkable disconnect                   # forget device
 ```
 
 ## How it works

@@ -12,8 +12,9 @@ go test ./...
 ## Architecture
 
 ```
-cmd/           cobra commands (ls, get, put, rm, mv, mkdir, export, watch, splash, etc)
+cmd/           cobra commands (ls, get, put, rm, mv, mkdir, export, watch, splash, read, highlights, backup, search, fetch, info, etc)
 pkg/transport/ SSH + Cloud transports, auto-detect
+pkg/extract/   EPUB text extraction, highlight parsing
 pkg/model/     Document, Metadata, Tree, Pen types, Error envelope
 pkg/encoding/  v6 .rm binary parser (strokes, authors)
 pkg/render/    SVG renderer
