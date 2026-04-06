@@ -25,6 +25,7 @@ remarkable auth                 # cloud access (optional)
 ```bash
 remarkable ls                          # list docs (JSON, trash filtered)
 remarkable ls --all                    # include trashed docs
+remarkable ls --tag "work"             # filter by tag
 remarkable get "Document Name"         # download PDF/EPUB
 remarkable put report.pdf "Folder"     # upload
 remarkable rm "Old Draft"              # delete
@@ -41,20 +42,31 @@ remarkable write "Notebook" --text "Long text auto-wraps and scales to fit"
 ```
 Text appears as pen strokes (Fineliner). Auto-scales based on length — short text is large, long text wraps. When writing to an existing page, appends below existing content. Requires SSH.
 
-### Export handwriting to SVG
+### Export and read handwritten pages
 ```bash
-remarkable export "Notebook" -o /tmp/export
+remarkable export "Notebook"                   # all pages → PNG
+remarkable export "Notebook" --page 19         # single page → PNG
+remarkable export "Notebook" --page 19 --svg   # SVG instead
+remarkable export "Notebook" -o /tmp/notes     # custom output dir
 ```
-Parses v6 .rm binary, renders pen strokes to SVG (one per page). Requires SSH.
+Default output is PNG (readable by AI agents). Falls back to cloud when SSH unavailable. To read a page: export it, then read the PNG file.
+
+**Agent workflow to read handwriting:**
+```bash
+remarkable export "Main" --page 19 -o /tmp/notes
+# then read /tmp/notes/page_019.png with your vision capability
+```
 
 ### Page management
 ```bash
-remarkable pages "Notebook"                          # list pages
-remarkable pages add "Notebook"                      # add blank page at end
-remarkable pages add "Notebook" --template "P Grid medium"
-remarkable pages add "Notebook" --after 3            # insert after page 3
-remarkable pages rm "Notebook" --page 5              # delete page 5
-remarkable pages move "Notebook" --page 5 --to 2     # reorder
+remarkable pages "Notebook"                                     # list pages
+remarkable pages add "Notebook"                                 # add blank page at end
+remarkable pages add "Notebook" --template "P Grid medium"      # with template
+remarkable pages add "Notebook" --after 3                       # insert after page 3
+remarkable pages rm "Notebook" --page 5                         # delete page
+remarkable pages move "Notebook" --page 5 --to 2                # reorder within notebook
+remarkable pages copy "Source NB" --page 3 --to "Dest NB"       # copy to another notebook
+remarkable pages move-to "Source NB" --page 3 --to "Dest NB"    # move to another notebook
 ```
 Requires SSH.
 
@@ -92,9 +104,11 @@ remarkable disconnect                     # forget device
 | SSH | ~1s | Everything |
 | Cloud | ~3s | ls only (read-only fallback) |
 
-SSH-only commands: write, export, watch, splash, password, setup-key, pages, tag, get, put, rm, mv, mkdir
+SSH-only: write, watch, splash, password, setup-key, pages, tag, put, rm, mv, mkdir
 
-Cloud works for: ls (auto-fallback when SSH unreachable)
+SSH preferred, cloud fallback: ls, export, get
+
+All commands auto-detect the best transport. If SSH is unavailable (device sleeping), ls/export/get fall back to cloud automatically. No manual transport selection needed.
 
 ## Output format
 

@@ -17,18 +17,18 @@ import (
 var (
 	exportOutput string
 	exportPage   int
-	exportPNG    bool
+	exportSVG    bool // opt-in for SVG-only (default is PNG)
 )
 
 var exportCmd = &cobra.Command{
 	Use:   "export <name>",
 	Short: "Export notebook pages to SVG or PNG",
-	Long: `Render handwritten pages to SVG (or PNG with --png).
-Use --page N to export a single page.
+	Long: `Export handwritten pages as PNG (default) or SVG.
+Uses SSH when available, falls back to cloud automatically.
 
-  remarkable export "Main"                 # all pages → SVG
-  remarkable export "Main" --page 19       # single page
-  remarkable export "Main" --page 19 --png # as PNG (readable by AI)`,
+  remarkable export "Main"                  # all pages → PNG
+  remarkable export "Main" --page 19        # single page
+  remarkable export "Main" --svg            # SVG instead of PNG`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		t, err := getTransport()
@@ -124,13 +124,19 @@ Use --page N to export a single page.
 			renderer.RenderPage(f, blocks)
 			f.Close()
 
-			entry := map[string]any{"page": pageNum, "svg": svgFile}
+			entry := map[string]any{"page": pageNum}
 
-			// convert to PNG if requested
-			if exportPNG {
+			if exportSVG {
+				// SVG-only mode
+				entry["file"] = svgFile
+			} else {
+				// default: convert to PNG (readable by AI agents)
 				pngFile := filepath.Join(outDir, fmt.Sprintf("page_%03d.png", pageNum))
 				if convertSVGtoPNG(svgFile, pngFile) == nil {
-					entry["png"] = pngFile
+					entry["file"] = pngFile
+					os.Remove(svgFile) // clean up intermediate SVG
+				} else {
+					entry["file"] = svgFile // fallback to SVG if conversion fails
 				}
 			}
 
@@ -167,6 +173,6 @@ func convertSVGtoPNG(svgPath, pngPath string) error {
 func init() {
 	exportCmd.Flags().StringVarP(&exportOutput, "output", "o", "", "output directory")
 	exportCmd.Flags().IntVar(&exportPage, "page", 0, "export single page (1-indexed)")
-	exportCmd.Flags().BoolVar(&exportPNG, "png", false, "also convert to PNG (readable by AI)")
+	exportCmd.Flags().BoolVar(&exportSVG, "svg", false, "output SVG instead of PNG")
 	rootCmd.AddCommand(exportCmd)
 }
