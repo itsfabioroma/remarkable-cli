@@ -10,7 +10,10 @@ Paste this into Claude Code, Codex, or any agent with shell access:
 Clone https://github.com/itsfabioroma/remarkable-cli
 Build it with go build -o remarkable .
 Symlink the binary to /usr/local/bin/remarkable
-Install the skill: cp -r skills/remarkable-cli/ .claude/skills/remarkable-cli/
+Install the skill into your agent's skills folder:
+  Claude Code:  cp -r skills/remarkable-cli/ .claude/skills/remarkable-cli/
+  OpenClaw:     cp -r skills/remarkable-cli/ .openclaw/workspace/skills/remarkable-cli/
+  Codex:        cp -r skills/remarkable-cli/ .agents/skills/remarkable-cli/
 Run remarkable connect to set up SSH
 ```
 
