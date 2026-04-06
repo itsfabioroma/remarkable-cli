@@ -61,12 +61,12 @@ remarkable disconnect                  # forget device
 
 ## How it works
 
-One binary, two transports. `connect` probes SSH and cloud, saves what's available. Every command auto-picks the best transport:
+`remarkable connect` runs an interactive wizard: cloud first, then optional SSH.
 
-- **SSH** (~1s) — full access: read, write, export, watch, splash, device management
-- **Cloud** (~3s) — read-only fallback when SSH is unreachable
+- **Cloud** (~3s) — default transport, works for everyone: list, download, export, search
+- **SSH** (~1s) — optional, requires developer mode: write, upload, delete, pages, tags, splash
 
-JSON output by default when called by an agent. Structured errors with actionable hints — the agent reads the error and knows its next move.
+JSON output by default when called by an agent. Structured errors with actionable hints.
 
 ## Agent skills
 
@@ -85,21 +85,26 @@ git clone https://github.com/itsfabioroma/remarkable-cli
 cd remarkable-cli
 go build -o remarkable .
 sudo ln -sf $(pwd)/remarkable /usr/local/bin/remarkable
-./remarkable connect            # USB (10.11.99.1)
-./remarkable connect 192.168.1.5  # or WiFi
+./remarkable connect            # interactive wizard
 ```
 
 ## Requirements
 
 - Go 1.21+
-- reMarkable Paper Pro with developer mode enabled
-- optional: reMarkable Cloud subscription (for cloud fallback)
+- reMarkable Paper Pro
+- optional: developer mode + SSH for write access
 
-## WiFi SSH
+## WiFi SSH (optional, power users)
 
 Paper Pro blocks WiFi SSH by default. Enable once via USB:
 
 ```bash
 ssh root@10.11.99.1
 rm-ssh-over-wlan on
+```
+
+Then add SSH to your config:
+
+```bash
+remarkable connect 192.168.1.5 --ssh-only
 ```

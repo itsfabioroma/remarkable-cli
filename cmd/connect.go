@@ -1,11 +1,14 @@
 package cmd
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/itsfabioroma/remarkable-cli/pkg/auth"
 	"github.com/itsfabioroma/remarkable-cli/pkg/transport"
 	"github.com/spf13/cobra"
 )
@@ -42,71 +45,160 @@ func saveConfig(cfg *deviceConfig) error {
 
 var connectCmd = &cobra.Command{
 	Use:   "connect [host]",
-	Short: "Connect to a reMarkable — probes SSH + cloud, saves both",
-	Long: `Probes SSH and cloud connectivity, saves what's available.
-Future commands auto-pick the best transport per operation.
+	Short: "Set up your reMarkable — cloud first, optional SSH for power users",
+	Long: `Interactive setup wizard.
 
-  remarkable connect              # USB default (10.11.99.1)
-  remarkable connect 192.168.1.5  # WiFi IP`,
+  remarkable connect                        # full wizard
+  remarkable connect 192.168.1.5            # skip to SSH setup
+  remarkable connect --cloud-only           # cloud only, no SSH prompt
+  remarkable connect 192.168.1.5 --ssh-only # SSH only, no cloud prompt`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		host := flagHost
+		cfg := loadConfig()
+		if cfg == nil {
+			cfg = &deviceConfig{}
+		}
+
+		reader := bufio.NewReader(os.Stdin)
+		interactive := isTerminal()
+		sshOnly, _ := cmd.Flags().GetBool("ssh-only")
+		cloudOnly, _ := cmd.Flags().GetBool("cloud-only")
+
+		// if host arg given, treat as SSH setup shortcut
 		if len(args) > 0 {
-			host = args[0]
-		}
-
-		cfg := &deviceConfig{Host: host}
-		opts := sshOpts(host)
-
-		// probe SSH
-		ssh := transport.NewSSHTransport(opts...)
-		if err := ssh.Connect(); err == nil {
-			docs, err := ssh.ListDocuments()
-			ssh.Close()
-			if err == nil {
-				cfg.HasSSH = true
-				if flagPassword != "" {
-					cfg.Password = flagPassword
-				}
-				fmt.Printf("  ssh: connected (%d documents)\n", len(docs))
+			cfg.Host = args[0]
+			if !cloudOnly {
+				sshOnly = true
 			}
-		} else {
-			fmt.Printf("  ssh: unavailable (%s)\n", err)
 		}
 
-		// probe cloud
-		cloud := transport.NewCloudTransport()
-		if err := cloud.Connect(); err == nil {
-			docs, err := cloud.ListDocuments()
-			cloud.Close()
-			if err == nil {
-				cfg.HasCloud = true
-				fmt.Printf("  cloud: connected (%d documents)\n", len(docs))
-			}
-		} else {
-			fmt.Printf("  cloud: unavailable (run 'remarkable auth' to set up)\n")
+		// --- step 1: cloud ---
+		if !sshOnly {
+			cfg = setupCloud(cfg, reader, interactive)
 		}
 
+		// --- step 2: SSH (optional) ---
+		if !cloudOnly {
+			cfg = setupSSH(cfg, reader, interactive, args)
+		}
+
+		// must have at least one transport
 		if !cfg.HasSSH && !cfg.HasCloud {
 			fmt.Println("\nNo connection available.")
-			fmt.Println("  SSH: plug in USB or connect to same WiFi, then retry")
-			fmt.Println("  Cloud: run 'remarkable auth' first")
 			return fmt.Errorf("no connection")
 		}
 
 		saveConfig(cfg)
 
 		output(map[string]any{
-			"host":     host,
-			"hasSSH":   cfg.HasSSH,
 			"hasCloud": cfg.HasCloud,
+			"hasSSH":   cfg.HasSSH,
+			"host":     cfg.Host,
 		})
 
-		if isTerminal() {
-			fmt.Println("\nSaved. Commands will auto-pick the best transport.")
+		if interactive {
+			fmt.Println("\nSaved. You're ready to go!")
+			if cfg.HasCloud && !cfg.HasSSH {
+				fmt.Println("Tip: add SSH later for write access → remarkable connect <device-ip> --ssh-only")
+			}
 		}
 		return nil
 	},
+}
+
+// setupCloud handles cloud authentication
+func setupCloud(cfg *deviceConfig, reader *bufio.Reader, interactive bool) *deviceConfig {
+	store := auth.NewTokenStore()
+
+	// check if already authed
+	if _, err := auth.EnsureAuth(store); err == nil {
+		cfg.HasCloud = true
+		fmt.Println("  cloud: already connected ✓")
+		return cfg
+	}
+
+	if interactive {
+		fmt.Println("\n── Step 1: Cloud ──")
+		fmt.Println("Go to https://my.remarkable.com/device/browser/connect")
+		fmt.Println("Enter the 8-character code below (or press Enter to skip)")
+		fmt.Println()
+	}
+
+	fmt.Print("Code: ")
+	code, _ := reader.ReadString('\n')
+	code = strings.TrimSpace(code)
+
+	// skip if empty
+	if code == "" {
+		fmt.Println("  cloud: skipped")
+		return cfg
+	}
+
+	// register device
+	tokens, err := auth.RegisterDevice(code)
+	if err != nil {
+		fmt.Printf("  cloud: failed (%s)\n", err)
+		return cfg
+	}
+
+	if err := store.Save(tokens); err != nil {
+		fmt.Printf("  cloud: registered but failed to save tokens (%s)\n", err)
+		return cfg
+	}
+
+	cfg.HasCloud = true
+	fmt.Println("  cloud: connected ✓")
+	return cfg
+}
+
+// setupSSH handles SSH connection setup
+func setupSSH(cfg *deviceConfig, reader *bufio.Reader, interactive bool, args []string) *deviceConfig {
+	// if not already skipping and no host provided, ask
+	if len(args) == 0 && cfg.Host == "" {
+		if interactive && !cfg.HasSSH {
+			fmt.Println("\n── Step 2: SSH (optional, for write access) ──")
+			fmt.Println("Requires developer mode. Enter device IP or press Enter to skip.")
+			fmt.Println()
+			fmt.Print("Host: ")
+			host, _ := reader.ReadString('\n')
+			host = strings.TrimSpace(host)
+			if host == "" {
+				fmt.Println("  ssh: skipped")
+				return cfg
+			}
+			cfg.Host = host
+		} else if cfg.Host == "" {
+			cfg.Host = "10.11.99.1"
+		}
+	}
+
+	// ask for password if not already saved and not passed via flag
+	if interactive && flagPassword == "" && cfg.Password == "" {
+		fmt.Print("Password (Enter to skip): ")
+		pass, _ := reader.ReadString('\n')
+		pass = strings.TrimSpace(pass)
+		if pass != "" {
+			cfg.Password = pass
+		}
+	} else if flagPassword != "" {
+		cfg.Password = flagPassword
+	}
+
+	// probe SSH
+	opts := sshOpts(cfg.Host)
+	ssh := transport.NewSSHTransport(opts...)
+	if err := ssh.Connect(); err == nil {
+		docs, err := ssh.ListDocuments()
+		ssh.Close()
+		if err == nil {
+			cfg.HasSSH = true
+			fmt.Printf("  ssh: connected (%d documents) ✓\n", len(docs))
+		}
+	} else {
+		fmt.Printf("  ssh: unavailable (%s)\n", err)
+	}
+
+	return cfg
 }
 
 var disconnectCmd = &cobra.Command{
@@ -120,6 +212,8 @@ var disconnectCmd = &cobra.Command{
 }
 
 func init() {
+	connectCmd.Flags().Bool("ssh-only", false, "only set up SSH, skip cloud")
+	connectCmd.Flags().Bool("cloud-only", false, "only set up cloud, skip SSH")
 	rootCmd.AddCommand(connectCmd)
 	rootCmd.AddCommand(disconnectCmd)
 }

@@ -12,13 +12,13 @@ Install: `go install github.com/itsfabioroma/remarkable-cli@latest` or `remarkab
 ## First-time setup
 
 ```bash
-remarkable connect              # USB (10.11.99.1)
-remarkable connect 192.168.1.5  # WiFi
-remarkable connect 192.168.1.5 --password "yourpass"  # saves password for future use
-remarkable auth                 # cloud access (optional)
+remarkable connect                                     # interactive wizard (cloud + optional SSH)
+remarkable connect --cloud-only                        # cloud only, no SSH
+remarkable connect 192.168.1.5 --password "pass"       # SSH setup with saved password
+remarkable connect 192.168.1.5 --ssh-only              # add SSH to existing cloud config
 ```
 
-`connect` probes SSH and cloud, saves both (including password). All future commands auto-pick the best transport and reuse the saved password. SSH is fast (~1s), cloud is fallback (~3s).
+`connect` is an interactive wizard: cloud auth first (works for everyone), then optional SSH for write access (requires developer mode). Saves everything including password. Cloud is the primary transport (~3s), SSH is the power-user fallback (~1s, full access).
 
 ## Commands
 
@@ -151,14 +151,12 @@ remarkable disconnect                     # forget device
 
 | Transport | Speed | Capabilities |
 |-----------|-------|-------------|
-| SSH | ~1s | Everything |
-| Cloud | ~3s | Read-only: ls, get, export, read, search |
+| Cloud | ~3s | Read: ls, get, export, read, search |
+| SSH | ~1s | Everything (requires developer mode) |
 
-SSH-only: write, watch, splash, password, setup-key, pages, tag, put, rm, mv, mkdir, highlights, backup, fetch
+Cloud is the default transport. SSH is optional for write operations: put, rm, mv, mkdir, write, pages, tag, watch, splash, password, setup-key, highlights, backup, fetch, refresh.
 
-SSH preferred, cloud fallback: ls, export, get, read, search
-
-All commands auto-detect the best transport. If SSH is unavailable (device sleeping), ls/export/get fall back to cloud automatically. No manual transport selection needed.
+All commands auto-detect the best transport. Cloud is tried first, SSH is the fallback.
 
 ## Output format
 

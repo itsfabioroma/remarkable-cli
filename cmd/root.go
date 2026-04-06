@@ -62,7 +62,28 @@ func getTransport() (transport.Transport, error) {
 			"remarkable auth              # set up cloud access")
 	}
 
-	// try SSH first (faster, full access)
+	// try cloud first (works for everyone, no developer mode needed)
+	if cfg.HasCloud {
+		t := transport.NewCloudTransport()
+		if err := t.Connect(); err == nil {
+			return t, nil
+		}
+		// cloud failed, try SSH fallback
+		if cfg.HasSSH {
+			host := cfg.Host
+			if rootCmd.PersistentFlags().Changed("host") {
+				host = flagHost
+			}
+			t := transport.NewSSHTransport(sshOpts(host)...)
+			if err := t.Connect(); err == nil {
+				return t, nil
+			}
+		}
+		return nil, verboseErr("cloud unavailable and SSH failed",
+			"remarkable connect    # reconnect")
+	}
+
+	// cloud not configured, try SSH
 	if cfg.HasSSH {
 		host := cfg.Host
 		if rootCmd.PersistentFlags().Changed("host") {
@@ -72,31 +93,12 @@ func getTransport() (transport.Transport, error) {
 		if err := t.Connect(); err == nil {
 			return t, nil
 		}
-		// SSH failed but we have cloud fallback
-		if cfg.HasCloud {
-			t := transport.NewCloudTransport()
-			if err := t.Connect(); err == nil {
-				return t, nil
-			}
-		}
-		return nil, verboseErr("SSH unavailable and cloud failed",
-			"check device is on the same network",
-			"remarkable connect <host>    # reconnect")
-	}
-
-	// SSH not configured, try cloud
-	if cfg.HasCloud {
-		t := transport.NewCloudTransport()
-		if err := t.Connect(); err == nil {
-			return t, nil
-		}
-		return nil, verboseErr("cloud connection failed",
-			"remarkable auth    # re-authenticate",
-			"remarkable connect <host>    # add SSH for full access")
+		return nil, verboseErr("SSH unavailable",
+			"remarkable connect    # reconnect")
 	}
 
 	return nil, verboseErr("no working transport in saved config",
-		"remarkable connect <host>    # reconnect")
+		"remarkable connect    # reconnect")
 }
 
 // getSSH returns SSH specifically — for device management commands
