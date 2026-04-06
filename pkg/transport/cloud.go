@@ -82,21 +82,30 @@ func (t *CloudTransport) ListDocuments() ([]model.Document, error) {
 	return docs, nil
 }
 
-// read-only fallback — these require SSH
+// cloud can read blobs but not individual files within a doc
 func (t *CloudTransport) ReadFile(docID, path string) (io.ReadCloser, error) {
-	return nil, model.NewCLIError(model.ErrUnsupported, "cloud", "use SSH for file access")
+	return nil, model.NewCLIError(model.ErrUnsupported, "cloud",
+		"reading individual files requires SSH.\n  remarkable connect <host>    # add SSH for export, highlights, etc.")
 }
+
 func (t *CloudTransport) WriteFile(docID, path string, r io.Reader) error {
-	return model.NewCLIError(model.ErrUnsupported, "cloud", "use SSH for file writes")
+	return model.NewCLIError(model.ErrUnsupported, "cloud",
+		"writing files requires SSH.\n  remarkable connect <host>    # add SSH for full write access")
 }
+
 func (t *CloudTransport) DeleteDocument(docID string) error {
-	return model.NewCLIError(model.ErrUnsupported, "cloud", "use SSH for deletion")
+	return model.NewCLIError(model.ErrUnsupported, "cloud",
+		"deletion requires SSH.\n  remarkable connect <host>    # add SSH for delete")
 }
+
 func (t *CloudTransport) GetMetadata(docID string) (*model.Metadata, error) {
-	return nil, model.NewCLIError(model.ErrUnsupported, "cloud", "use SSH for metadata")
+	return nil, model.NewCLIError(model.ErrUnsupported, "cloud",
+		"metadata access requires SSH.\n  remarkable connect <host>    # add SSH")
 }
+
 func (t *CloudTransport) SetMetadata(docID string, m *model.Metadata) error {
-	return model.NewCLIError(model.ErrUnsupported, "cloud", "use SSH for metadata")
+	return model.NewCLIError(model.ErrUnsupported, "cloud",
+		"metadata writes require SSH.\n  remarkable connect <host>    # add SSH")
 }
 
 // --- internals ---

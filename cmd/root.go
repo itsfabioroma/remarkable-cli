@@ -37,26 +37,93 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&flagKeyPath, "key", "", "SSH key path")
 }
 
-// getTransport connects using saved config or flags
+// getTransport returns the best available transport
+// prefers SSH (faster, full access), falls back to cloud (listing, remote put)
 func getTransport() (transport.Transport, error) {
-	host := flagHost
-	transportName := flagTransport
+	cfg := loadConfig()
 
-	// use saved config if no explicit flags
-	if cfg := loadConfig(); cfg != nil {
-		if !rootCmd.PersistentFlags().Changed("host") && cfg.Host != "" {
-			host = cfg.Host
-		}
-		if !rootCmd.PersistentFlags().Changed("transport") && cfg.Transport != "" {
-			transportName = cfg.Transport
-		}
+	// explicit --transport flag overrides everything
+	if rootCmd.PersistentFlags().Changed("transport") {
+		return connectExplicit(flagTransport)
 	}
 
-	opts := sshOpts(host)
+	// no saved config → tell the agent what to do
+	if cfg == nil {
+		return nil, verboseErr("no device configured",
+			"remarkable connect <host>    # connect via SSH (USB or WiFi)",
+			"remarkable connect --host <ip>  # then auth for cloud too",
+			"remarkable auth              # set up cloud access")
+	}
 
-	switch transportName {
+	// try SSH first (faster, full access)
+	if cfg.HasSSH {
+		host := cfg.Host
+		if rootCmd.PersistentFlags().Changed("host") {
+			host = flagHost
+		}
+		t := transport.NewSSHTransport(sshOpts(host)...)
+		if err := t.Connect(); err == nil {
+			return t, nil
+		}
+		// SSH failed but we have cloud fallback
+		if cfg.HasCloud {
+			t := transport.NewCloudTransport()
+			if err := t.Connect(); err == nil {
+				return t, nil
+			}
+		}
+		return nil, verboseErr("SSH unavailable and cloud failed",
+			"check device is on the same network",
+			"remarkable connect <host>    # reconnect")
+	}
+
+	// SSH not configured, try cloud
+	if cfg.HasCloud {
+		t := transport.NewCloudTransport()
+		if err := t.Connect(); err == nil {
+			return t, nil
+		}
+		return nil, verboseErr("cloud connection failed",
+			"remarkable auth    # re-authenticate",
+			"remarkable connect <host>    # add SSH for full access")
+	}
+
+	return nil, verboseErr("no working transport in saved config",
+		"remarkable connect <host>    # reconnect")
+}
+
+// getSSH returns SSH specifically — for device management commands
+// gives a clear error explaining WHY SSH is needed
+func getSSH() (*transport.SSHTransport, error) {
+	cfg := loadConfig()
+
+	host := "10.11.99.1"
+	if cfg != nil && cfg.Host != "" {
+		host = cfg.Host
+	}
+	if rootCmd.PersistentFlags().Changed("host") {
+		host = flagHost
+	}
+
+	t := transport.NewSSHTransport(sshOpts(host)...)
+	if err := t.Connect(); err != nil {
+		return nil, verboseErr("this command requires SSH (direct device access)",
+			fmt.Sprintf("remarkable connect %s    # ensure SSH is available", host),
+			"SSH is needed for: splash, password, setup-key, watch, export")
+	}
+	return t, nil
+}
+
+func connectExplicit(name string) (transport.Transport, error) {
+	cfg := loadConfig()
+	host := flagHost
+	if cfg != nil && cfg.Host != "" && !rootCmd.PersistentFlags().Changed("host") {
+		host = cfg.Host
+	}
+
+	switch name {
 	case "ssh":
-		t := transport.NewSSHTransport(opts...)
+		t := transport.NewSSHTransport(sshOpts(host)...)
 		if err := t.Connect(); err != nil {
 			return nil, err
 		}
@@ -68,27 +135,11 @@ func getTransport() (transport.Transport, error) {
 		}
 		return t, nil
 	case "auto":
-		return transport.AutoDetect(opts...)
+		return nil, fmt.Errorf("auto is the default, don't pass --transport auto")
 	default:
-		return nil, model.NewCLIError(model.ErrUnsupported, "",
-			fmt.Sprintf("unknown transport: %s", transportName))
+		return nil, verboseErr(fmt.Sprintf("unknown transport: %s", name),
+			"valid transports: ssh, cloud")
 	}
-}
-
-// getSSH returns SSH transport specifically (for device management commands)
-func getSSH() (*transport.SSHTransport, error) {
-	host := flagHost
-	if cfg := loadConfig(); cfg != nil {
-		if !rootCmd.PersistentFlags().Changed("host") && cfg.Host != "" {
-			host = cfg.Host
-		}
-	}
-
-	t := transport.NewSSHTransport(sshOpts(host)...)
-	if err := t.Connect(); err != nil {
-		return nil, err
-	}
-	return t, nil
 }
 
 func sshOpts(host string) []transport.SSHOption {
@@ -102,6 +153,15 @@ func sshOpts(host string) []transport.SSHOption {
 	return opts
 }
 
+// verboseErr creates an error with actionable hints for the agent
+func verboseErr(msg string, hints ...string) error {
+	full := msg
+	for _, h := range hints {
+		full += "\n  " + h
+	}
+	return &model.CLIError{Message: full, Code: model.ErrTransportUnavailable}
+}
+
 // --- output helpers ---
 
 func output(data any) {
@@ -112,7 +172,6 @@ func output(data any) {
 		return
 	}
 
-	// human output for doc lists
 	if docs, ok := data.([]model.Document); ok {
 		tree := model.NewTree(docs)
 		printTree(tree, "", 0)
@@ -125,8 +184,12 @@ func output(data any) {
 }
 
 func outputError(err error) {
-	if cliErr, ok := err.(*model.CLIError); ok && (flagJSON || !isTerminal()) {
-		json.NewEncoder(os.Stderr).Encode(cliErr)
+	if flagJSON || !isTerminal() {
+		if cliErr, ok := err.(*model.CLIError); ok {
+			json.NewEncoder(os.Stderr).Encode(cliErr)
+			return
+		}
+		json.NewEncoder(os.Stderr).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	fmt.Fprintf(os.Stderr, "error: %s\n", err)

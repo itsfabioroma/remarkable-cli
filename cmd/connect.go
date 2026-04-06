@@ -10,10 +10,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// config persisted between invocations
+// deviceConfig stores what's available after connect
 type deviceConfig struct {
-	Host      string `json:"host"`
-	Transport string `json:"transport"`
+	Host     string `json:"host,omitempty"`
+	HasSSH   bool   `json:"hasSSH"`
+	HasCloud bool   `json:"hasCloud"`
 }
 
 func configPath() string {
@@ -28,9 +29,6 @@ func loadConfig() *deviceConfig {
 	}
 	var cfg deviceConfig
 	json.Unmarshal(data, &cfg)
-	if cfg.Host == "" {
-		return nil
-	}
 	return &cfg
 }
 
@@ -43,13 +41,12 @@ func saveConfig(cfg *deviceConfig) error {
 
 var connectCmd = &cobra.Command{
 	Use:   "connect [host]",
-	Short: "Connect to a reMarkable and remember it",
-	Long: `Verifies the device is reachable and saves the connection for future commands.
+	Short: "Connect to a reMarkable — probes SSH + cloud, saves both",
+	Long: `Probes SSH and cloud connectivity, saves what's available.
+Future commands auto-pick the best transport per operation.
 
-Examples:
-  remarkable connect                    # auto-detect via USB
-  remarkable connect 172.20.10.2        # WiFi IP
-  remarkable connect --transport cloud  # cloud only`,
+  remarkable connect              # USB default (10.11.99.1)
+  remarkable connect 192.168.1.5  # WiFi IP`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		host := flagHost
@@ -57,75 +54,63 @@ Examples:
 			host = args[0]
 		}
 
-		// verify connectivity
-		opts := []transport.SSHOption{transport.WithHost(host)}
-		if flagPassword != "" {
-			opts = append(opts, transport.WithPassword(flagPassword))
-		}
-		if flagKeyPath != "" {
-			opts = append(opts, transport.WithKeyPath(flagKeyPath))
+		cfg := &deviceConfig{Host: host}
+		opts := sshOpts(host)
+
+		// probe SSH
+		ssh := transport.NewSSHTransport(opts...)
+		if err := ssh.Connect(); err == nil {
+			docs, err := ssh.ListDocuments()
+			ssh.Close()
+			if err == nil {
+				cfg.HasSSH = true
+				fmt.Printf("  ssh: connected (%d documents)\n", len(docs))
+			}
+		} else {
+			fmt.Printf("  ssh: unavailable (%s)\n", err)
 		}
 
-		var t transport.Transport
-		var err error
-
-		switch flagTransport {
-		case "cloud":
-			ct := transport.NewCloudTransport()
-			err = ct.Connect()
-			t = ct
-		case "ssh":
-			st := transport.NewSSHTransport(opts...)
-			err = st.Connect()
-			t = st
-		default:
-			t, err = transport.AutoDetect(opts...)
+		// probe cloud
+		cloud := transport.NewCloudTransport()
+		if err := cloud.Connect(); err == nil {
+			docs, err := cloud.ListDocuments()
+			cloud.Close()
+			if err == nil {
+				cfg.HasCloud = true
+				fmt.Printf("  cloud: connected (%d documents)\n", len(docs))
+			}
+		} else {
+			fmt.Printf("  cloud: unavailable (run 'remarkable auth' to set up)\n")
 		}
 
-		if err != nil {
-			outputError(err)
-			return err
+		if !cfg.HasSSH && !cfg.HasCloud {
+			fmt.Println("\nNo connection available.")
+			fmt.Println("  SSH: plug in USB or connect to same WiFi, then retry")
+			fmt.Println("  Cloud: run 'remarkable auth' first")
+			return fmt.Errorf("no connection")
 		}
 
-		docs, err := t.ListDocuments()
-		t.Close()
-		if err != nil {
-			outputError(err)
-			return err
-		}
-
-		// save config
-		transportName := t.Name()
-		if flagTransport != "auto" {
-			transportName = flagTransport
-		}
-		saveConfig(&deviceConfig{Host: host, Transport: transportName})
+		saveConfig(cfg)
 
 		output(map[string]any{
-			"status":    "connected",
-			"host":      host,
-			"transport": transportName,
-			"documents": len(docs),
+			"host":     host,
+			"hasSSH":   cfg.HasSSH,
+			"hasCloud": cfg.HasCloud,
 		})
 
-		if !flagJSON && isTerminal() {
-			fmt.Printf("Connected to reMarkable at %s via %s (%d documents)\n",
-				host, transportName, len(docs))
+		if isTerminal() {
+			fmt.Println("\nSaved. Commands will auto-pick the best transport.")
 		}
-
 		return nil
 	},
 }
 
 var disconnectCmd = &cobra.Command{
 	Use:   "disconnect",
-	Short: "Forget the saved device connection",
+	Short: "Forget saved connection",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		os.Remove(configPath())
-		output(map[string]any{"status": "disconnected"})
-		if !flagJSON && isTerminal() {
-			fmt.Println("Device config cleared.")
-		}
+		fmt.Println("Disconnected.")
 		return nil
 	},
 }
