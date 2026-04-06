@@ -4,9 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"image"
-	"image/color"
-	"image/png"
 	"io"
 	"net"
 	"os"
@@ -24,11 +21,6 @@ import (
 // xochitl data directory on reMarkable devices
 const xochitlPath = "/home/root/.local/share/remarkable/xochitl"
 
-// screen dimensions
-const (
-	PPWidth  = 1632 // Paper Pro
-	PPHeight = 2154
-)
 
 // SSHTransport implements DeviceTransport via SSH/SFTP
 type SSHTransport struct {
@@ -343,81 +335,6 @@ func (t *SSHTransport) DeleteDocument(docID string) error {
 	return nil
 }
 
-// Screenshot captures the device screen
-// Paper Pro uses /dev/dri/card0 (no /dev/fb0). We read the framebuffer
-// via /proc/[xochitl_pid]/mem at the mapped address from /proc/[pid]/maps.
-func (t *SSHTransport) Screenshot() (image.Image, error) {
-	// step 1: find xochitl PID
-	pid, err := t.RunCommand("pidof xochitl")
-	if err != nil {
-		return nil, model.NewCLIError(model.ErrUnsupported, "ssh",
-			fmt.Sprintf("xochitl not running: %v", err))
-	}
-	pid = strings.TrimSpace(pid)
-
-	// step 2: check if /dev/fb0 exists (RM2) or /dev/dri/card0 (Paper Pro)
-	hasFb0, _ := t.RunCommand("test -e /dev/fb0 && echo yes || echo no")
-	hasFb0 = strings.TrimSpace(hasFb0)
-
-	if hasFb0 == "yes" {
-		return t.screenshotFb0()
-	}
-
-	// Paper Pro: find the framebuffer address from /proc/[pid]/maps
-	return t.screenshotDRI(pid)
-}
-
-// screenshotFb0 reads the classic /dev/fb0 framebuffer (RM2)
-func (t *SSHTransport) screenshotFb0() (image.Image, error) {
-	session, err := t.sshClient.NewSession()
-	if err != nil {
-		return nil, err
-	}
-	defer session.Close()
-
-	out, err := session.Output("cat /dev/fb0")
-	if err != nil {
-		return nil, model.NewCLIError(model.ErrUnsupported, "ssh", "cannot read /dev/fb0")
-	}
-
-	width, height := detectDimensions(len(out))
-	if width == 0 {
-		return nil, model.NewCLIError(model.ErrCorruptedData, "ssh",
-			fmt.Sprintf("unexpected framebuffer size: %d bytes", len(out)))
-	}
-
-	return bgraToImage(out, width, height), nil
-}
-
-// screenshotDRI reads the framebuffer via /proc/pid/mem for Paper Pro
-// Paper Pro uses DRI with tiled memory buffers (1632x2154 split across multiple 1.7MB tiles)
-// TODO: implement proper tile reassembly (see goMarkableStream for reference)
-func (t *SSHTransport) screenshotDRI(pid string) (image.Image, error) {
-	return nil, model.NewCLIError(model.ErrUnsupported, "ssh",
-		"Paper Pro screenshot not yet supported (DRI tiled framebuffer requires tile reassembly). "+
-			"Use 'remarkable export' to render pages as SVG instead.")
-}
-
-// bgraToImage converts raw BGRA pixel data to a Go image
-func bgraToImage(data []byte, width, height int) image.Image {
-	img := image.NewRGBA(image.Rect(0, 0, width, height))
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			offset := (y*width + x) * 4
-			if offset+3 >= len(data) {
-				break
-			}
-			img.SetRGBA(x, y, color.RGBA{
-				R: data[offset+2],
-				G: data[offset+1],
-				B: data[offset+0],
-				A: 255, // force opaque
-			})
-		}
-	}
-	return img
-}
-
 // RunCommand executes a command over SSH and returns stdout
 func (t *SSHTransport) RunCommand(cmd string) (string, error) {
 	session, err := t.sshClient.NewSession()
@@ -507,16 +424,6 @@ func (t *SSHTransport) WatchChanges(ctx context.Context) (<-chan ChangeEvent, er
 	return ch, nil
 }
 
-// SaveScreenshot writes a screenshot to a file
-func SaveScreenshot(img image.Image, path string) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return png.Encode(f, img)
-}
-
 // --- helpers ---
 
 func keyAuth(path string) (ssh.AuthMethod, error) {
@@ -559,19 +466,3 @@ func (t *SSHTransport) removeAll(path string) {
 	t.sftpClient.RemoveDirectory(path)
 }
 
-// detectDimensions guesses screen size from framebuffer byte count
-func detectDimensions(size int) (int, int) {
-	// Paper Pro: 1632 * 2154 * 4 = 14,061,696
-	if size == 1632*2154*4 {
-		return 1632, 2154
-	}
-	// RM2 (fw 3.24+): 1404 * 1872 * 4 = 10,509,696
-	if size == 1404*1872*4 {
-		return 1404, 1872
-	}
-	// RM2 legacy: 1408 * 1872 * 2 = 5,271,552
-	if size == 1408*1872*2 {
-		return 1408, 1872
-	}
-	return 0, 0
-}

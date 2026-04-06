@@ -11,7 +11,6 @@ import (
 )
 
 var (
-	// global flags
 	flagTransport string
 	flagJSON      bool
 	flagHost      string
@@ -19,14 +18,11 @@ var (
 	flagKeyPath   string
 )
 
-// rootCmd is the base command
 var rootCmd = &cobra.Command{
 	Use:   "remarkable",
-	Short: "Swiss army knife for reMarkable tablets",
-	Long:  "A self-contained CLI to interact with reMarkable Paper Pro. SSH, USB, and Cloud.",
+	Short: "CLI for reMarkable Paper Pro — SSH, Cloud, agent-native JSON",
 }
 
-// Execute runs the root command
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -34,39 +30,29 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&flagTransport, "transport", "auto", "transport: ssh, usb, cloud, auto")
-	rootCmd.PersistentFlags().BoolVar(&flagJSON, "json", false, "output as JSON (default for non-TTY)")
-	rootCmd.PersistentFlags().StringVar(&flagHost, "host", "10.11.99.1", "device IP address")
+	rootCmd.PersistentFlags().StringVar(&flagTransport, "transport", "auto", "transport: ssh, cloud, auto")
+	rootCmd.PersistentFlags().BoolVar(&flagJSON, "json", false, "JSON output (default for non-TTY)")
+	rootCmd.PersistentFlags().StringVar(&flagHost, "host", "10.11.99.1", "device IP")
 	rootCmd.PersistentFlags().StringVar(&flagPassword, "password", "", "SSH password")
-	rootCmd.PersistentFlags().StringVar(&flagKeyPath, "key", "", "SSH private key path")
+	rootCmd.PersistentFlags().StringVar(&flagKeyPath, "key", "", "SSH key path")
 }
 
-// getTransport connects to the device using saved config or flags
+// getTransport connects using saved config or flags
 func getTransport() (transport.Transport, error) {
-	// merge saved config with CLI flags (flags override saved config)
 	host := flagHost
 	transportName := flagTransport
 
+	// use saved config if no explicit flags
 	if cfg := loadConfig(); cfg != nil {
-		// use saved host if user didn't explicitly set --host
 		if !rootCmd.PersistentFlags().Changed("host") && cfg.Host != "" {
 			host = cfg.Host
 		}
-		// use saved transport if user didn't explicitly set --transport
 		if !rootCmd.PersistentFlags().Changed("transport") && cfg.Transport != "" {
 			transportName = cfg.Transport
 		}
 	}
 
-	opts := []transport.SSHOption{
-		transport.WithHost(host),
-	}
-	if flagPassword != "" {
-		opts = append(opts, transport.WithPassword(flagPassword))
-	}
-	if flagKeyPath != "" {
-		opts = append(opts, transport.WithKeyPath(flagKeyPath))
-	}
+	opts := sshOpts(host)
 
 	switch transportName {
 	case "ssh":
@@ -75,31 +61,49 @@ func getTransport() (transport.Transport, error) {
 			return nil, err
 		}
 		return t, nil
-
-	case "usb":
-		t := transport.NewUSBTransport()
-		if err := t.Connect(); err != nil {
-			return nil, err
-		}
-		return t, nil
-
 	case "cloud":
 		t := transport.NewCloudTransport()
 		if err := t.Connect(); err != nil {
 			return nil, err
 		}
 		return t, nil
-
 	case "auto":
 		return transport.AutoDetect(opts...)
-
 	default:
 		return nil, model.NewCLIError(model.ErrUnsupported, "",
 			fmt.Sprintf("unknown transport: %s", transportName))
 	}
 }
 
-// output prints data as JSON or human-readable
+// getSSH returns SSH transport specifically (for device management commands)
+func getSSH() (*transport.SSHTransport, error) {
+	host := flagHost
+	if cfg := loadConfig(); cfg != nil {
+		if !rootCmd.PersistentFlags().Changed("host") && cfg.Host != "" {
+			host = cfg.Host
+		}
+	}
+
+	t := transport.NewSSHTransport(sshOpts(host)...)
+	if err := t.Connect(); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func sshOpts(host string) []transport.SSHOption {
+	opts := []transport.SSHOption{transport.WithHost(host)}
+	if flagPassword != "" {
+		opts = append(opts, transport.WithPassword(flagPassword))
+	}
+	if flagKeyPath != "" {
+		opts = append(opts, transport.WithKeyPath(flagKeyPath))
+	}
+	return opts
+}
+
+// --- output helpers ---
+
 func output(data any) {
 	if flagJSON || !isTerminal() {
 		enc := json.NewEncoder(os.Stdout)
@@ -108,42 +112,24 @@ func output(data any) {
 		return
 	}
 
-	// human output depends on the data type
-	switch v := data.(type) {
-	case []model.Document:
-		printDocList(v)
-	default:
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		enc.Encode(data)
-	}
-}
-
-// outputError prints an error as JSON or plain text
-func outputError(err error) {
-	if cliErr, ok := err.(*model.CLIError); ok {
-		if flagJSON || !isTerminal() {
-			json.NewEncoder(os.Stderr).Encode(cliErr)
-			return
-		}
-		fmt.Fprintf(os.Stderr, "error: %s\n", cliErr.Error())
+	// human output for doc lists
+	if docs, ok := data.([]model.Document); ok {
+		tree := model.NewTree(docs)
+		printTree(tree, "", 0)
 		return
 	}
 
-	if flagJSON || !isTerminal() {
-		json.NewEncoder(os.Stderr).Encode(model.CLIError{
-			Message: err.Error(),
-			Code:    "unknown",
-		})
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	enc.Encode(data)
+}
+
+func outputError(err error) {
+	if cliErr, ok := err.(*model.CLIError); ok && (flagJSON || !isTerminal()) {
+		json.NewEncoder(os.Stderr).Encode(cliErr)
 		return
 	}
 	fmt.Fprintf(os.Stderr, "error: %s\n", err)
-}
-
-// printDocList prints documents as a human-readable table
-func printDocList(docs []model.Document) {
-	tree := model.NewTree(docs)
-	printTree(tree, "", 0)
 }
 
 func printTree(tree *model.Tree, parentID string, depth int) {
@@ -151,11 +137,6 @@ func printTree(tree *model.Tree, parentID string, depth int) {
 		indent := ""
 		for i := 0; i < depth; i++ {
 			indent += "  "
-		}
-
-		icon := "📄"
-		if doc.IsFolder() {
-			icon = "📁"
 		}
 
 		extra := ""
@@ -166,16 +147,15 @@ func printTree(tree *model.Tree, parentID string, depth int) {
 			extra += fmt.Sprintf(" (%d pages)", doc.PageCount)
 		}
 
-		fmt.Printf("%s%s %s%s\n", indent, icon, doc.Name, extra)
-
-		// recurse into folders
 		if doc.IsFolder() {
+			fmt.Printf("%s%s/%s\n", indent, doc.Name, extra)
 			printTree(tree, doc.ID, depth+1)
+		} else {
+			fmt.Printf("%s%s%s\n", indent, doc.Name, extra)
 		}
 	}
 }
 
-// isTerminal checks if stdout is a terminal
 func isTerminal() bool {
 	fi, _ := os.Stdout.Stat()
 	return (fi.Mode() & os.ModeCharDevice) != 0

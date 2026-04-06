@@ -2,12 +2,11 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/fabioroma/remarkable-cli/pkg/model"
-	"github.com/fabioroma/remarkable-cli/pkg/transport"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
@@ -24,62 +23,38 @@ var mkdirCmd = &cobra.Command{
 		}
 		defer t.Close()
 
-		fullT, ok := t.(transport.FullTransport)
-		if !ok {
-			err := model.NewCLIError(model.ErrUnsupported, t.Name(),
-				"this transport does not support creating folders")
-			outputError(err)
-			return err
-		}
-
-		// resolve parent if path contains /
+		// resolve parent if path has /
 		name := args[0]
 		parentID := ""
 
 		if strings.Contains(name, "/") {
-			parentPath := filepath.Dir(name)
-			name = filepath.Base(name)
-
-			docs, err := t.ListDocuments()
-			if err != nil {
-				outputError(err)
-				return err
-			}
+			docs, _ := t.ListDocuments()
 			tree := model.NewTree(docs)
-			parent, err := tree.Resolve(parentPath)
+			parent, err := tree.Resolve(filepath.Dir(name))
 			if err != nil {
 				outputError(err)
 				return err
 			}
 			parentID = parent.ID
+			name = filepath.Base(name)
 		}
 
-		// create folder metadata
 		docID := uuid.New().String()
 		meta := &model.Metadata{
-			VisibleName: name,
-			Type:        string(model.DocTypeCollection),
-			Parent:      parentID,
-			LastModified: fmt.Sprintf("%d", os.Getpagesize()),
-			Version:     0,
+			VisibleName:  name,
+			Type:         string(model.DocTypeCollection),
+			Parent:       parentID,
+			LastModified: fmt.Sprintf("%d", time.Now().UnixMilli()),
 		}
 
-		if err := fullT.SetMetadata(docID, meta); err != nil {
+		if err := t.SetMetadata(docID, meta); err != nil {
 			outputError(err)
 			return err
 		}
 
-		output(map[string]any{
-			"id":     docID,
-			"name":   name,
-			"parent": parentID,
-			"status": "created",
-		})
-
+		output(map[string]any{"id": docID, "name": name, "parent": parentID, "status": "created"})
 		return nil
 	},
 }
 
-func init() {
-	rootCmd.AddCommand(mkdirCmd)
-}
+func init() { rootCmd.AddCommand(mkdirCmd) }

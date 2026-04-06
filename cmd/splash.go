@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/fabioroma/remarkable-cli/pkg/model"
-	"github.com/fabioroma/remarkable-cli/pkg/transport"
 	"github.com/spf13/cobra"
 
 	// register image decoders
@@ -231,26 +230,6 @@ var splashRestoreCmd = &cobra.Command{
 }
 
 // --- helpers ---
-
-// getSSH returns an SSH transport or error
-func getSSH() (*transport.SSHTransport, error) {
-	t, err := getTransport()
-	if err != nil {
-		outputError(err)
-		return nil, err
-	}
-
-	sshT, ok := t.(*transport.SSHTransport)
-	if !ok {
-		t.Close()
-		err := model.NewCLIError(model.ErrUnsupported, t.Name(),
-			"this command requires SSH transport (use --transport ssh)")
-		outputError(err)
-		return nil, err
-	}
-
-	return sshT, nil
-}
 
 // fitToScreen resizes an image to fit within target dimensions, centered on white background
 func fitToScreen(src image.Image, targetW, targetH int) image.Image {
