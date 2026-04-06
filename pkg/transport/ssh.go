@@ -67,6 +67,16 @@ func (t *SSHTransport) Name() string { return "ssh" }
 
 // Connect establishes SSH + SFTP connections
 func (t *SSHTransport) Connect() error {
+	// fast check: is the host even reachable? (1s TCP ping)
+	addr := net.JoinHostPort(t.host, "22")
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		return model.NewCLIError(model.ErrTransportUnavailable, "ssh",
+			fmt.Sprintf("device at %s is not reachable (sleeping? WiFi off?)\n"+
+				"  wake the device and retry, or use --transport cloud", t.host))
+	}
+	conn.Close()
+
 	config := &ssh.ClientConfig{
 		User:            t.user,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
@@ -112,8 +122,7 @@ func (t *SSHTransport) Connect() error {
 	}
 	config.Auth = authMethods
 
-	// dial
-	addr := net.JoinHostPort(t.host, "22")
+	// dial SSH
 	client, err := ssh.Dial("tcp", addr, config)
 	if err != nil {
 		return model.NewCLIError(model.ErrTransportUnavailable, "ssh",
