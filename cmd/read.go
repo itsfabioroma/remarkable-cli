@@ -41,8 +41,11 @@ var readCmd = &cobra.Command{
 
 		// must be pdf or epub
 		ft := doc.FileType
+		if ft == "" {
+			ft = "notebook"
+		}
 		if ft != "pdf" && ft != "epub" {
-			err := fmt.Errorf("%q is a %s — read only supports pdf and epub", doc.Name, ft)
+			err := fmt.Errorf("%q is a %s — read extracts text from pdf and epub only. Use 'remarkable export' for notebooks", doc.Name, ft)
 			outputError(err)
 			return err
 		}
