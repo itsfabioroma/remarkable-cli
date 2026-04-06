@@ -82,12 +82,12 @@ func (t *Tree) Resolve(path string) (*Document, error) {
 	return nil, fmt.Errorf("empty path")
 }
 
-// Find searches for a document by name (case-insensitive, any depth)
+// Find searches for a document by name (case-insensitive, excludes trash)
 func (t *Tree) Find(name string) []*Document {
 	var results []*Document
 	lower := strings.ToLower(name)
 	for _, d := range t.docs {
-		if strings.ToLower(d.Name) == lower {
+		if strings.ToLower(d.Name) == lower && !d.IsTrashed() {
 			results = append(results, d)
 		}
 	}
