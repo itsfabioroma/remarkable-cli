@@ -131,6 +131,12 @@ remarkable info "Document Name"
 ```
 Shows: name, path, type, pages, tags, last modified, ID. Quick lookup for agents.
 
+### Refresh (reload device UI)
+```bash
+remarkable refresh                        # restart xochitl so changes appear
+```
+Call after put, mkdir, rm, mv, or fetch — especially after bulk operations. Without refresh, uploaded docs won't be visible on the device screen until the next manual reboot.
+
 ### Device management
 ```bash
 remarkable password "newpass"             # change SSH password

@@ -1,9 +1,12 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
 	"io"
 	"net"
 	"os"
@@ -303,8 +306,18 @@ func (t *SSHTransport) WriteRawFile(remotePath string, data []byte) error {
 }
 
 // WriteFile writes a file into a document's space
+// top-level doc files (content, pdf, epub) → {uuid}.{relPath}
+// page/subdir files (contain / or .rm) → {uuid}/{relPath}
 func (t *SSHTransport) WriteFile(docID, relPath string, r io.Reader) error {
-	fullPath := filepath.Join(xochitlPath, docID, relPath)
+	var fullPath string
+
+	// top-level doc files live as dot-files alongside the UUID dir
+	switch relPath {
+	case "content", "pdf", "epub", "pagedata":
+		fullPath = filepath.Join(xochitlPath, docID+"."+relPath)
+	default:
+		fullPath = filepath.Join(xochitlPath, docID, relPath)
+	}
 
 	// ensure parent dir exists
 	dir := filepath.Dir(fullPath)
@@ -431,6 +444,137 @@ func (t *SSHTransport) WatchChanges(ctx context.Context) (<-chan ChangeEvent, er
 	}()
 
 	return ch, nil
+}
+
+// Paper Pro screen dimensions
+const (
+	ppScreenW   = 1632
+	ppScreenH   = 2154
+	ppBPP       = 4 // BGRA, 4 bytes per pixel
+	ppFBSize    = ppScreenW * ppScreenH * ppBPP
+	driMapSize  = 1757184 // each /dev/dri/card0 mapping
+)
+
+// Screenshot captures the device screen via /proc/PID/mem
+func (t *SSHTransport) Screenshot() (image.Image, error) {
+	// find xochitl PID
+	pidStr, err := t.RunCommand("pidof xochitl")
+	if err != nil {
+		return nil, fmt.Errorf("xochitl not running: %w", err)
+	}
+	pid := strings.TrimSpace(pidStr)
+
+	// detect device type
+	hasFb0, _ := t.RunCommand("test -e /dev/fb0 && echo yes || echo no")
+	if strings.TrimSpace(hasFb0) == "yes" {
+		return t.screenshotFb0(pid)
+	}
+	return t.screenshotDRI(pid)
+}
+
+// screenshotFb0 reads the framebuffer on RM2 (legacy)
+func (t *SSHTransport) screenshotFb0(pid string) (image.Image, error) {
+	return nil, fmt.Errorf("fb0 screenshot not implemented (RM2)")
+}
+
+// screenshotDRI reads the DRI framebuffer on Paper Pro
+func (t *SSHTransport) screenshotDRI(pid string) (image.Image, error) {
+	// get all /dev/dri/card0 mappings
+	mapsRaw, err := t.RunCommand(fmt.Sprintf("grep '/dev/dri/card0' /proc/%s/maps", pid))
+	if err != nil {
+		return nil, fmt.Errorf("no DRI mappings found: %w", err)
+	}
+
+	// parse start addresses
+	var addrs []uint64
+	for _, line := range strings.Split(strings.TrimSpace(mapsRaw), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "-", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		addr, err := strconv.ParseUint(parts[0], 16, 64)
+		if err != nil {
+			continue
+		}
+		addrs = append(addrs, addr)
+	}
+
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("no DRI mapping addresses found")
+	}
+
+	// read each DRI mapping via dd with decimal addresses (computed in Go)
+	// BusyBox has no hex-to-decimal conversion, so we pre-compute
+	tmpRaw := "/tmp/rm-screenshot.raw"
+	defer t.RunCommand("rm -f " + tmpRaw)
+
+	// build dd commands with decimal skip values
+	var ddCmds []string
+	for _, addr := range addrs {
+		ddCmds = append(ddCmds,
+			fmt.Sprintf("dd if=/proc/%s/mem bs=%d count=1 skip=%d iflag=skip_bytes",
+				pid, driMapSize, addr))
+	}
+
+	// concatenate and truncate: (dd1; dd2; ...) 2>/dev/null | dd of=output bs=SIZE count=1
+	cmd := fmt.Sprintf("(%s) 2>/dev/null | dd of=%s bs=%d count=1 2>/dev/null",
+		strings.Join(ddCmds, "; "), tmpRaw, ppFBSize)
+
+	t.RunCommand(cmd)
+
+	// read result via SFTP
+	f, err := t.sftpClient.Open(tmpRaw)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read screenshot output: %w", err)
+	}
+	defer f.Close()
+
+	fbData, err := io.ReadAll(f)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read screenshot data: %w", err)
+	}
+
+	if len(fbData) > ppFBSize {
+		fbData = fbData[:ppFBSize]
+	}
+
+	if len(fbData) < ppFBSize {
+		return nil, fmt.Errorf("framebuffer too small: got %d bytes, need %d", len(fbData), ppFBSize)
+	}
+
+	// convert BGRA to image.RGBA
+	img := image.NewRGBA(image.Rect(0, 0, ppScreenW, ppScreenH))
+	for y := 0; y < ppScreenH; y++ {
+		for x := 0; x < ppScreenW; x++ {
+			off := (y*ppScreenW + x) * ppBPP
+			b := fbData[off]
+			g := fbData[off+1]
+			r := fbData[off+2]
+			a := fbData[off+3]
+			img.SetRGBA(x, y, color.RGBA{R: r, G: g, B: b, A: a})
+		}
+	}
+
+	return img, nil
+}
+
+// RunCommandBytes executes a command and returns raw stdout bytes
+func (t *SSHTransport) RunCommandBytes(cmd string) ([]byte, error) {
+	session, err := t.sshClient.NewSession()
+	if err != nil {
+		return nil, err
+	}
+	defer session.Close()
+
+	var buf bytes.Buffer
+	session.Stdout = &buf
+	if err := session.Run(cmd); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // --- helpers ---

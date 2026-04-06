@@ -92,6 +92,18 @@ Uses SSH when available, falls back to cloud automatically.
 		}
 		os.MkdirAll(outDir, 0755)
 
+		// download source file for PDF/EPUB documents
+		var sourceFile string
+		if doc.FileType == "pdf" || doc.FileType == "epub" {
+			rc, err := t.ReadFile(doc.ID, doc.FileType)
+			if err == nil {
+				sourceData, _ := io.ReadAll(rc)
+				rc.Close()
+				sourceFile = filepath.Join(outDir, doc.Name+"."+doc.FileType)
+				os.WriteFile(sourceFile, sourceData, 0644)
+			}
+		}
+
 		// render each page
 		renderer := render.NewSVGRenderer()
 		var exported []map[string]any
@@ -144,7 +156,12 @@ Uses SSH when available, falls back to cloud automatically.
 			exported = append(exported, entry)
 		}
 
-		output(map[string]any{"id": doc.ID, "name": doc.Name, "pages": exported, "output": outDir})
+		// build result
+		result := map[string]any{"id": doc.ID, "name": doc.Name, "pages": exported, "output": outDir}
+		if sourceFile != "" {
+			result["source_file"] = sourceFile
+		}
+		output(result)
 		return nil
 	},
 }
