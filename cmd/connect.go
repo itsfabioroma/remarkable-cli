@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"time"
 
+	"github.com/fabioroma/remarkable-cli/pkg/daemon"
 	"github.com/fabioroma/remarkable-cli/pkg/transport"
 	"github.com/spf13/cobra"
 )
@@ -21,7 +24,6 @@ func configPath() string {
 	return filepath.Join(home, ".config", "remarkable-cli", "device.json")
 }
 
-// loadConfig reads saved device config
 func loadConfig() *deviceConfig {
 	data, err := os.ReadFile(configPath())
 	if err != nil {
@@ -35,7 +37,6 @@ func loadConfig() *deviceConfig {
 	return &cfg
 }
 
-// saveConfig persists device config
 func saveConfig(cfg *deviceConfig) error {
 	dir := filepath.Dir(configPath())
 	os.MkdirAll(dir, 0700)
@@ -45,9 +46,9 @@ func saveConfig(cfg *deviceConfig) error {
 
 var connectCmd = &cobra.Command{
 	Use:   "connect [host]",
-	Short: "Connect to a reMarkable and remember it",
-	Long: `Saves the device host and transport so future commands just work.
-Without arguments, auto-detects via USB. With a host, connects via SSH over WiFi.
+	Short: "Connect to a reMarkable and keep the connection alive",
+	Long: `Connects to the device, saves config, and starts a background daemon
+that keeps SSH open. Future commands talk to the daemon — instant response.
 
 Examples:
   remarkable connect                    # auto-detect via USB
@@ -55,12 +56,18 @@ Examples:
   remarkable connect --transport cloud  # cloud only`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// stop existing daemon if running
+		if daemon.IsRunning() {
+			daemon.Stop()
+			time.Sleep(200 * time.Millisecond)
+		}
+
 		host := flagHost
 		if len(args) > 0 {
 			host = args[0]
 		}
 
-		// try connecting
+		// try connecting to verify
 		opts := []transport.SSHOption{transport.WithHost(host)}
 		if flagPassword != "" {
 			opts = append(opts, transport.WithPassword(flagPassword))
@@ -89,53 +96,84 @@ Examples:
 			outputError(err)
 			return err
 		}
-		defer t.Close()
 
-		// verify by listing docs
+		// verify
 		docs, err := t.ListDocuments()
 		if err != nil {
+			t.Close()
 			outputError(err)
 			return err
 		}
+		t.Close()
 
 		// save config
-		cfg := &deviceConfig{
-			Host:      host,
-			Transport: t.Name(),
-		}
+		transportName := t.Name()
 		if flagTransport != "auto" {
-			cfg.Transport = flagTransport
+			transportName = flagTransport
 		}
-		saveConfig(cfg)
+		saveConfig(&deviceConfig{Host: host, Transport: transportName})
+
+		// start daemon in background
+		exe, _ := os.Executable()
+		daemonCmd := exec.Command(exe, "daemon",
+			"--host", host,
+			"--transport", transportName,
+		)
+		if flagPassword != "" {
+			daemonCmd.Args = append(daemonCmd.Args, "--password", flagPassword)
+		}
+		if flagKeyPath != "" {
+			daemonCmd.Args = append(daemonCmd.Args, "--key", flagKeyPath)
+		}
+
+		// detach from terminal
+		daemonCmd.Stdout = nil
+		daemonCmd.Stderr = nil
+		daemonCmd.Stdin = nil
+		if err := daemonCmd.Start(); err != nil {
+			return fmt.Errorf("cannot start daemon: %w", err)
+		}
+		daemonCmd.Process.Release()
+
+		// wait for daemon to be ready
+		for i := 0; i < 20; i++ {
+			time.Sleep(100 * time.Millisecond)
+			if daemon.IsRunning() {
+				break
+			}
+		}
 
 		result := map[string]any{
 			"status":    "connected",
 			"host":      host,
-			"transport": t.Name(),
+			"transport": transportName,
 			"documents": len(docs),
+			"daemon":    daemon.IsRunning(),
 		}
 		output(result)
 
 		if !flagJSON && isTerminal() {
 			fmt.Printf("Connected to reMarkable at %s via %s (%d documents)\n",
-				host, t.Name(), len(docs))
-			fmt.Println("Device saved. Future commands will use this connection automatically.")
+				host, transportName, len(docs))
+			if daemon.IsRunning() {
+				fmt.Println("Background daemon started. Commands will be instant.")
+			}
 		}
 
 		return nil
 	},
 }
 
-// disconnectCmd clears saved config
 var disconnectCmd = &cobra.Command{
 	Use:   "disconnect",
-	Short: "Forget the saved device connection",
+	Short: "Disconnect and stop the background daemon",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		daemon.Stop()
 		os.Remove(configPath())
 
 		output(map[string]any{"status": "disconnected"})
 		if !flagJSON && isTerminal() {
-			fmt.Println("Device config cleared.")
+			fmt.Println("Disconnected. Daemon stopped.")
 		}
 		return nil
 	},
