@@ -151,9 +151,14 @@ func connectExplicit(name string) (transport.Transport, error) {
 
 func sshOpts(host string) []transport.SSHOption {
 	opts := []transport.SSHOption{transport.WithHost(host)}
+
+	// flag password takes priority, then saved config password
 	if flagPassword != "" {
 		opts = append(opts, transport.WithPassword(flagPassword))
+	} else if cfg := loadConfig(); cfg != nil && cfg.Password != "" {
+		opts = append(opts, transport.WithPassword(cfg.Password))
 	}
+
 	if flagKeyPath != "" {
 		opts = append(opts, transport.WithKeyPath(flagKeyPath))
 	}

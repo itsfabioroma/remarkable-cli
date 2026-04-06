@@ -14,10 +14,11 @@ Install: `go install github.com/itsfabioroma/remarkable-cli@latest` or `remarkab
 ```bash
 remarkable connect              # USB (10.11.99.1)
 remarkable connect 192.168.1.5  # WiFi
+remarkable connect 192.168.1.5 --password "yourpass"  # saves password for future use
 remarkable auth                 # cloud access (optional)
 ```
 
-`connect` probes SSH and cloud, saves both. All future commands auto-pick the best transport. SSH is fast (~1s), cloud is fallback (~3s).
+`connect` probes SSH and cloud, saves both (including password). All future commands auto-pick the best transport and reuse the saved password. SSH is fast (~1s), cloud is fallback (~3s).
 
 ## Commands
 

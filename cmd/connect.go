@@ -13,6 +13,7 @@ import (
 // deviceConfig stores what's available after connect
 type deviceConfig struct {
 	Host     string `json:"host,omitempty"`
+	Password string `json:"password,omitempty"`
 	HasSSH   bool   `json:"hasSSH"`
 	HasCloud bool   `json:"hasCloud"`
 }
@@ -64,6 +65,9 @@ Future commands auto-pick the best transport per operation.
 			ssh.Close()
 			if err == nil {
 				cfg.HasSSH = true
+				if flagPassword != "" {
+					cfg.Password = flagPassword
+				}
 				fmt.Printf("  ssh: connected (%d documents)\n", len(docs))
 			}
 		} else {
