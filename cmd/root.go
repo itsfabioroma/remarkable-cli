@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/fabioroma/remarkable-cli/pkg/daemon"
 	"github.com/fabioroma/remarkable-cli/pkg/model"
 	"github.com/fabioroma/remarkable-cli/pkg/transport"
 	"github.com/spf13/cobra"
@@ -42,16 +41,8 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&flagKeyPath, "key", "", "SSH private key path")
 }
 
-// getTransport connects to the device — tries daemon first for instant response
+// getTransport connects to the device using saved config or flags
 func getTransport() (transport.Transport, error) {
-	// if daemon is running, use it (instant, no SSH handshake)
-	if daemon.IsRunning() {
-		dt := &daemon.Transport{}
-		if err := dt.Connect(); err == nil {
-			return dt, nil
-		}
-	}
-
 	// merge saved config with CLI flags (flags override saved config)
 	host := flagHost
 	transportName := flagTransport

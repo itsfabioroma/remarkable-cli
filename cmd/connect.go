@@ -4,11 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"time"
 
-	"github.com/fabioroma/remarkable-cli/pkg/daemon"
 	"github.com/fabioroma/remarkable-cli/pkg/transport"
 	"github.com/spf13/cobra"
 )
@@ -46,9 +43,8 @@ func saveConfig(cfg *deviceConfig) error {
 
 var connectCmd = &cobra.Command{
 	Use:   "connect [host]",
-	Short: "Connect to a reMarkable and keep the connection alive",
-	Long: `Connects to the device, saves config, and starts a background daemon
-that keeps SSH open. Future commands talk to the daemon — instant response.
+	Short: "Connect to a reMarkable and remember it",
+	Long: `Verifies the device is reachable and saves the connection for future commands.
 
 Examples:
   remarkable connect                    # auto-detect via USB
@@ -56,18 +52,12 @@ Examples:
   remarkable connect --transport cloud  # cloud only`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// stop existing daemon if running
-		if daemon.IsRunning() {
-			daemon.Stop()
-			time.Sleep(200 * time.Millisecond)
-		}
-
 		host := flagHost
 		if len(args) > 0 {
 			host = args[0]
 		}
 
-		// try connecting to verify
+		// verify connectivity
 		opts := []transport.SSHOption{transport.WithHost(host)}
 		if flagPassword != "" {
 			opts = append(opts, transport.WithPassword(flagPassword))
@@ -97,14 +87,12 @@ Examples:
 			return err
 		}
 
-		// verify
 		docs, err := t.ListDocuments()
+		t.Close()
 		if err != nil {
-			t.Close()
 			outputError(err)
 			return err
 		}
-		t.Close()
 
 		// save config
 		transportName := t.Name()
@@ -113,55 +101,16 @@ Examples:
 		}
 		saveConfig(&deviceConfig{Host: host, Transport: transportName})
 
-		// start daemon in background
-		exe, _ := os.Executable()
-		daemonCmd := exec.Command(exe, "daemon",
-			"--host", host,
-			"--transport", transportName,
-		)
-		if flagPassword != "" {
-			daemonCmd.Args = append(daemonCmd.Args, "--password", flagPassword)
-		}
-		if flagKeyPath != "" {
-			daemonCmd.Args = append(daemonCmd.Args, "--key", flagKeyPath)
-		}
-
-		// detach from terminal
-		daemonCmd.Stdout = nil
-		daemonCmd.Stderr = nil
-		daemonCmd.Stdin = nil
-		if err := daemonCmd.Start(); err != nil {
-			return fmt.Errorf("cannot start daemon: %w", err)
-		}
-		daemonCmd.Process.Release()
-
-		// wait for daemon to be ready and cache warmed
-		for i := 0; i < 50; i++ {
-			time.Sleep(100 * time.Millisecond)
-			if daemon.IsRunning() {
-				// verify cache is populated
-				resp, err := daemon.SendCommand(daemon.Request{Command: "ping"})
-				if err == nil && resp.OK {
-					break
-				}
-			}
-		}
-
-		result := map[string]any{
+		output(map[string]any{
 			"status":    "connected",
 			"host":      host,
 			"transport": transportName,
 			"documents": len(docs),
-			"daemon":    daemon.IsRunning(),
-		}
-		output(result)
+		})
 
 		if !flagJSON && isTerminal() {
 			fmt.Printf("Connected to reMarkable at %s via %s (%d documents)\n",
 				host, transportName, len(docs))
-			if daemon.IsRunning() {
-				fmt.Println("Background daemon started. Commands will be instant.")
-			}
 		}
 
 		return nil
@@ -170,14 +119,12 @@ Examples:
 
 var disconnectCmd = &cobra.Command{
 	Use:   "disconnect",
-	Short: "Disconnect and stop the background daemon",
+	Short: "Forget the saved device connection",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		daemon.Stop()
 		os.Remove(configPath())
-
 		output(map[string]any{"status": "disconnected"})
 		if !flagJSON && isTerminal() {
-			fmt.Println("Disconnected. Daemon stopped.")
+			fmt.Println("Device config cleared.")
 		}
 		return nil
 	},

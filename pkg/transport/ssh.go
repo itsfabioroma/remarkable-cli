@@ -152,37 +152,60 @@ func (t *SSHTransport) Close() error {
 	return nil
 }
 
-// ListDocuments reads all .metadata files and builds document list
+// ListDocuments reads all metadata in a single SSH command (~1s vs 10s+ for individual SFTP reads)
 func (t *SSHTransport) ListDocuments() ([]model.Document, error) {
-	entries, err := t.sftpClient.ReadDir(xochitlPath)
+	// bulk read: dump all .metadata and .content files in one SSH call
+	raw, err := t.RunCommand(`cd /home/root/.local/share/remarkable/xochitl && for f in *.metadata; do echo "====META $(basename $f .metadata)===="; cat "$f"; done && for f in *.content; do echo "====CONT $(basename $f .content)===="; cat "$f"; done`)
 	if err != nil {
 		return nil, model.NewCLIError(model.ErrTransportUnavailable, "ssh",
-			fmt.Sprintf("cannot read xochitl dir: %v", err))
+			fmt.Sprintf("cannot read documents: %v", err))
 	}
 
+	// parse the bulk output
+	metaMap := make(map[string]*model.Metadata)
+	contentMap := make(map[string]*model.Content)
+
+	sections := strings.Split(raw, "====")
+	for i := 0; i < len(sections)-1; i++ {
+		header := strings.TrimSpace(sections[i])
+		if header == "" {
+			continue
+		}
+
+		// header is "META <uuid>" or "CONT <uuid>", body is next section
+		if i+1 >= len(sections) {
+			break
+		}
+		body := sections[i+1]
+
+		if strings.HasPrefix(header, "META ") {
+			uuid := strings.TrimPrefix(header, "META ")
+			var meta model.Metadata
+			if err := json.Unmarshal([]byte(body), &meta); err == nil {
+				metaMap[uuid] = &meta
+			}
+		} else if strings.HasPrefix(header, "CONT ") {
+			uuid := strings.TrimPrefix(header, "CONT ")
+			var content model.Content
+			if err := json.Unmarshal([]byte(body), &content); err == nil {
+				contentMap[uuid] = &content
+			}
+		}
+	}
+
+	// build document list
 	var docs []model.Document
-	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasSuffix(name, ".metadata") {
+	for uuid, meta := range metaMap {
+		if meta.Deleted {
 			continue
 		}
 
-		uuid := strings.TrimSuffix(name, ".metadata")
-		meta, err := t.GetMetadata(uuid)
-		if err != nil || meta.Deleted {
-			continue
-		}
-
-		// parse lastModified (epoch ms string)
 		lastMod := time.Time{}
 		if ms, err := strconv.ParseInt(meta.LastModified, 10, 64); err == nil {
 			lastMod = time.UnixMilli(ms)
 		}
 
-		// read .content for file type + page count
-		content := t.readContent(uuid)
-
-		docs = append(docs, model.Document{
+		doc := model.Document{
 			ID:           uuid,
 			Name:         meta.VisibleName,
 			Type:         model.DocType(meta.Type),
@@ -190,9 +213,15 @@ func (t *SSHTransport) ListDocuments() ([]model.Document, error) {
 			LastModified: lastMod,
 			Pinned:       meta.Pinned,
 			Version:      meta.Version,
-			FileType:     content.FileType,
-			PageCount:    content.PageCount,
-		})
+		}
+
+		// merge content info
+		if content, ok := contentMap[uuid]; ok {
+			doc.FileType = content.FileType
+			doc.PageCount = content.PageCount
+		}
+
+		docs = append(docs, doc)
 	}
 
 	return docs, nil
