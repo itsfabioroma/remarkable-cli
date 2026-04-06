@@ -10,10 +10,8 @@ Paste this into Claude Code, Codex, or any agent with shell access:
 Clone https://github.com/itsfabioroma/remarkable-cli
 Build it with go build -o remarkable .
 Symlink the binary to /usr/local/bin/remarkable
-Copy the skill folder into your project so the agent auto-loads it:
-  cp -r skills/remarkable-cli/ .claude/skills/remarkable-cli/
+Install the skill: cp -r skills/remarkable-cli/ .claude/skills/remarkable-cli/
 Run remarkable connect to set up SSH
-Read the skill file to learn every command
 ```
 
 That's it. The agent reads the skill, learns every command, and starts managing your tablet.
