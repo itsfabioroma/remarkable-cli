@@ -22,9 +22,9 @@ var (
 
 var writeCmd = &cobra.Command{
 	Use:   "write <notebook>",
-	Short: "Write text on a notebook page",
-	Long: `Writes text onto a notebook page by cloning a real page from the device
-as template and injecting a text block. The text appears as typed text.
+	Short: "Write text as pen strokes on a notebook page",
+	Long: `Writes text onto a notebook page. Auto-scales to fit, wraps long lines.
+When writing to an existing page, appends below existing content.
 
   remarkable write "My Notebook" --text "Meeting notes here"
   remarkable write "My Notebook" --text "Page 2 content" --page 2
@@ -42,38 +42,16 @@ as template and injecting a text block. The text appears as typed text.
 		defer sshT.Close()
 
 		// find the notebook
-		docs, err := sshT.ListDocuments()
+		doc, err := findDoc(sshT, args[0])
 		if err != nil {
-			outputError(err)
 			return err
 		}
-
-		tree := model.NewTree(docs)
-		matches := tree.Find(args[0])
-		if len(matches) == 0 {
-			err := model.NewCLIError(model.ErrNotFound, "ssh", fmt.Sprintf("%q not found", args[0]))
-			outputError(err)
-			return err
-		}
-		if len(matches) > 1 {
-			err := model.NewCLIError(model.ErrConflict, "ssh", fmt.Sprintf("ambiguous: %d docs named %q", len(matches), args[0]))
-			outputError(err)
-			return err
-		}
-
-		doc := matches[0]
 
 		// read .content for page list
-		rc, err := sshT.ReadFile(doc.ID, "content")
+		content, rawContent, err := readContent(sshT, doc.ID)
 		if err != nil {
-			outputError(err)
 			return err
 		}
-		contentData, _ := io.ReadAll(rc)
-		rc.Close()
-
-		var content model.Content
-		json.Unmarshal(contentData, &content)
 		pageIDs := content.PageIDs()
 
 		// grab a real .rm from this notebook as template
@@ -89,55 +67,76 @@ as template and injecting a text block. The text appears as typed text.
 				break
 			}
 		}
-
 		if templateData == nil {
-			return fmt.Errorf("no existing pages to use as template")
+			return fmt.Errorf("no existing pages to use as template (need at least one page with content)")
 		}
 
-		// determine target page UUID
+		// determine target page
 		var targetPageID string
+		var existingRMData []byte
+
 		if writeNewPage {
 			targetPageID = uuid.New().String()
-			if err := updateContentPages(sshT, doc.ID, contentData, targetPageID); err != nil {
-				outputError(err)
+			if err := addPageToContentAtEnd(sshT, doc.ID, rawContent, targetPageID); err != nil {
 				return err
 			}
 			pageIDs = append(pageIDs, targetPageID)
+
 		} else if writePage > 0 {
 			idx := writePage - 1
 			if idx < 0 || idx >= len(pageIDs) {
 				return fmt.Errorf("page %d does not exist (notebook has %d pages)", writePage, len(pageIDs))
 			}
 			targetPageID = pageIDs[idx]
+
+			// read existing page content to find bottom
+			rc, err := sshT.ReadFile(doc.ID, targetPageID+".rm")
+			if err == nil {
+				existingRMData, _ = io.ReadAll(rc)
+				rc.Close()
+			}
+
 		} else {
 			if len(pageIDs) == 0 {
 				return fmt.Errorf("notebook has no pages")
 			}
 			targetPageID = pageIDs[len(pageIDs)-1]
+
+			rc, err := sshT.ReadFile(doc.ID, targetPageID+".rm")
+			if err == nil {
+				existingRMData, _ = io.ReadAll(rc)
+				rc.Close()
+			}
 		}
 
-		// render text as pen strokes
-		// coordinates: reMarkable uses center-origin, ~-700 to +700 X, 0 to 1800 Y
-		// use Fineliner v2 (17), black, thickness 2.0 to match real strokes
-		textLines := render.RenderText(writeText, -500, 300, 5.0,
+		// find where to start text vertically
+		startY := float32(200)
+		if len(existingRMData) > 0 {
+			// find the bottom of existing content
+			bottomY := findBottomY(existingRMData)
+			if bottomY > 100 {
+				startY = bottomY + 60 // gap below existing content
+			}
+		}
+
+		// render text with auto-scaling and word wrapping
+		textLines, _ := render.RenderTextAutoScale(writeText, startY,
 			model.PenFineliner2, model.ColorBlack, 2.0)
 
 		if len(textLines) == 0 {
 			return fmt.Errorf("text produced no strokes")
 		}
 
-		// fix point widths to match real device strokes (width=16, pressure range 8-30)
-		for i := range textLines {
-			for j := range textLines[i].Points {
-				textLines[i].Points[j].Width = 16
-				textLines[i].Points[j].Pressure = 20
-				textLines[i].Points[j].Speed = 0
-			}
+		// build .rm: use template for block structure, inject our strokes
+		// for existing pages, keep existing strokes and ADD ours
+		var rmData []byte
+		if len(existingRMData) > 0 && !writeNewPage {
+			// append to existing page: keep all existing blocks + add new strokes
+			rmData, err = appendStrokesToPage(existingRMData, textLines)
+		} else {
+			// new page: template stripped of strokes + our strokes
+			rmData, err = rm.BuildPageFromTemplate(textLines, "5a7cebef-607a-495b-b747-32eb39d8c423", templateData)
 		}
-
-		// strip template strokes, inject ours using correct parentID
-		// build .rm using real template (preserves all block structure, uses correct parentID)
-		rmData, err := rm.BuildPageFromTemplate(textLines, "5a7cebef-607a-495b-b747-32eb39d8c423", templateData)
 		if err != nil {
 			return fmt.Errorf("cannot build page: %w", err)
 		}
@@ -148,11 +147,9 @@ as template and injecting a text block. The text appears as typed text.
 		sshT.RunCommand(fmt.Sprintf("mkdir -p /home/root/.local/share/remarkable/xochitl/%s", doc.ID))
 
 		if err := sshT.WriteRawFile(rmPath, rmData); err != nil {
-			outputError(err)
 			return err
 		}
 
-		// restart xochitl
 		sshT.RunCommand("systemctl restart xochitl")
 
 		pageNum := len(pageIDs)
@@ -166,6 +163,7 @@ as template and injecting a text block. The text appears as typed text.
 			"pageId":  targetPageID,
 			"page":    pageNum,
 			"text":    writeText,
+			"strokes": len(textLines),
 			"bytes":   len(rmData),
 			"newPage": writeNewPage,
 			"status":  "written",
@@ -174,53 +172,128 @@ as template and injecting a text block. The text appears as typed text.
 	},
 }
 
+// findBottomY scans an .rm file and returns the lowest Y coordinate of any stroke
+func findBottomY(rmData []byte) float32 {
+	blocks, err := rm.ParseBlocks(rmData)
+	if err != nil {
+		return 0
+	}
 
-type sshWriter interface {
-	RunCommand(string) (string, error)
-	WriteRawFile(string, []byte) error
+	maxY := float32(0)
+	for _, b := range blocks {
+		if b.Type == rm.BlockSceneLineItem {
+			if ld, ok := b.Data.(*rm.SceneLineData); ok {
+				for _, p := range ld.Line.Points {
+					if p.Y > maxY {
+						maxY = p.Y
+					}
+				}
+			}
+		}
+	}
+	return maxY
 }
 
-func updateContentPages(sshT sshWriter, docID string, originalContent []byte, newPageID string) error {
-	var raw map[string]any
-	json.Unmarshal(originalContent, &raw)
+// appendStrokesToPage adds new strokes to an existing .rm file (preserving all existing content)
+func appendStrokesToPage(existingData []byte, newLines []rm.Line) ([]byte, error) {
+	// find parentID and max sequence from existing data
+	parentID := rm.CrdtId{0, 11}
+	maxSeq := uint64(100)
 
-	pageCount := 0
-	if pc, ok := raw["pageCount"].(float64); ok {
-		pageCount = int(pc)
-	}
-	seq := pageCount + 1
-	timestamp := fmt.Sprintf("1:%d", seq)
-	now := fmt.Sprintf("%d", time.Now().UnixMilli())
-
-	lastIdx := "ba"
-	if cPages, ok := raw["cPages"].(map[string]any); ok {
-		pages, _ := cPages["pages"].([]any)
-		if len(pages) > 0 {
-			lastPage, _ := pages[len(pages)-1].(map[string]any)
-			if idx, ok := lastPage["idx"].(map[string]any); ok {
-				if v, ok := idx["value"].(string); ok {
-					lastIdx = v + "a"
+	blocks, _ := rm.ParseBlocks(existingData)
+	for _, b := range blocks {
+		if b.Type == rm.BlockSceneLineItem {
+			if ld, ok := b.Data.(*rm.SceneLineData); ok {
+				if !ld.ParentID.Zero() {
+					parentID = ld.ParentID
+				}
+				if ld.ItemID.Part2 > maxSeq {
+					maxSeq = ld.ItemID.Part2
 				}
 			}
 		}
 	}
 
+	// copy entire existing file as-is
+	w := rm.NewWriter()
+	w.WriteBytes(existingData)
+
+	// append new LineItem blocks at the end
+	for i, line := range newLines {
+		seq := maxSeq + uint64(i) + 1
+		itemID := rm.CrdtId{1, seq}
+
+		sub := rm.NewWriter()
+		sub.WriteTag(1, rm.TagID)
+		sub.WriteCrdtId(parentID)
+		sub.WriteTag(2, rm.TagID)
+		sub.WriteCrdtId(itemID)
+		sub.WriteTag(3, rm.TagID)
+		sub.WriteCrdtId(rm.CrdtId{})
+		sub.WriteTag(4, rm.TagID)
+		sub.WriteCrdtId(rm.CrdtId{})
+		sub.WriteTag(5, rm.TagByte4)
+		sub.WriteUint32(0)
+
+		inner := rm.NewWriter()
+		inner.WriteUint8(0x03)
+		inner.WriteTag(1, rm.TagByte4)
+		inner.WriteUint32(uint32(line.Tool))
+		inner.WriteTag(2, rm.TagByte4)
+		inner.WriteUint32(uint32(line.Color))
+		inner.WriteTag(3, rm.TagByte8)
+		inner.WriteFloat64(line.ThicknessScale)
+
+		pointData := rm.NewWriter()
+		pointData.WritePointsV2(line.Points)
+		inner.WriteTag(5, rm.TagLength4)
+		inner.WriteUint32(uint32(len(pointData.Bytes())))
+		inner.WriteBytes(pointData.Bytes())
+
+		sub.WriteTag(6, rm.TagLength4)
+		sub.WriteUint32(uint32(len(inner.Bytes())))
+		sub.WriteBytes(inner.Bytes())
+
+		w.WriteUint32(uint32(len(sub.Bytes())))
+		w.WriteByte(0)
+		w.WriteByte(2)
+		w.WriteByte(2)
+		w.WriteByte(uint8(rm.BlockSceneLineItem))
+		w.WriteBytes(sub.Bytes())
+	}
+
+	return w.Bytes(), nil
+}
+
+// addPageToContentAtEnd adds a new page at the END of the notebook
+func addPageToContentAtEnd(sshT sshWriter, docID string, rawContent []byte, newPageID string) error {
+	var raw map[string]any
+	json.Unmarshal(rawContent, &raw)
+
+	pageCount := 0
+	if pc, ok := raw["pageCount"].(float64); ok {
+		pageCount = int(pc)
+	}
+
+	seq := pageCount + 1
+	ts := fmt.Sprintf("1:%d", seq)
+	now := fmt.Sprintf("%d", time.Now().UnixMilli())
+
+	// generate idx that sorts AFTER all existing pages
+	// use "zz..." prefix which sorts after all lowercase alpha values
+	lastIdx := fmt.Sprintf("zz%04d", seq)
+
 	newPage := map[string]any{
-		"id":      newPageID,
-		"idx":     map[string]any{"timestamp": timestamp, "value": lastIdx},
-		"template": map[string]any{"timestamp": timestamp, "value": "Blank"},
-		"modifed": now,
+		"id":       newPageID,
+		"idx":      map[string]any{"timestamp": ts, "value": lastIdx},
+		"template": map[string]any{"timestamp": ts, "value": "Blank"},
+		"modifed":  now,
 	}
 
 	if cPages, ok := raw["cPages"].(map[string]any); ok {
 		pages, _ := cPages["pages"].([]any)
 		pages = append(pages, newPage)
 		cPages["pages"] = pages
-		raw["cPages"] = cPages
-	} else {
-		pages, _ := raw["pages"].([]any)
-		pages = append(pages, newPageID)
-		raw["pages"] = pages
 	}
 
 	raw["pageCount"] = pageCount + 1
@@ -228,6 +301,11 @@ func updateContentPages(sshT sshWriter, docID string, originalContent []byte, ne
 	newContent, _ := json.MarshalIndent(raw, "", "    ")
 	contentPath := filepath.Join("/home/root/.local/share/remarkable/xochitl", docID+".content")
 	return sshT.WriteRawFile(contentPath, newContent)
+}
+
+type sshWriter interface {
+	RunCommand(string) (string, error)
+	WriteRawFile(string, []byte) error
 }
 
 func init() {
