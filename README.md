@@ -7,7 +7,11 @@ Give your AI agent full control of your reMarkable Paper Pro.
 Paste this into Claude Code, Codex, or any agent with shell access:
 
 ```
-Clone https://github.com/itsfabioroma/remarkable-cli, build it with `go build -o remarkable .`, symlink the binary to /usr/local/bin/remarkable, then run `remarkable connect` to set up SSH. Once connected, read the skill file in the repo to learn every command.
+Clone https://github.com/itsfabioroma/remarkable-cli
+Build it with go build -o remarkable .
+Symlink the binary to /usr/local/bin/remarkable
+Run remarkable connect to set up SSH
+Once connected, read the skill file in the repo to learn every command
 ```
 
 That's it. The agent reads the skill, learns every command, and starts managing your tablet.
