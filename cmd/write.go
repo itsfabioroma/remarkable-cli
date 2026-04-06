@@ -120,8 +120,25 @@ The text appears as handwritten fineliner strokes on the device.
 			return fmt.Errorf("text produced no strokes")
 		}
 
-		// build the .rm v6 file
-		rmData, err := rm.BuildPage(lines, "00000000-0000-0000-0000-000000000000")
+		// grab a real .rm file from this notebook as template
+		// this ensures all non-stroke blocks match what the device expects
+		var template []byte
+		for _, pid := range pageIDs {
+			rc, err := sshT.ReadFile(doc.ID, pid+".rm")
+			if err != nil {
+				continue
+			}
+			template, _ = io.ReadAll(rc)
+			rc.Close()
+			if len(template) > 0 {
+				// strip strokes from template, keep envelope blocks
+				template, _ = rm.ParseBlobToTemplate(template)
+				break
+			}
+		}
+
+		// build the .rm v6 file using real device template
+		rmData, err := rm.BuildPageFromTemplate(lines, "5a7cebef-607a-495b-b747-32eb39d8c423", template)
 		if err != nil {
 			return fmt.Errorf("cannot build .rm page: %w", err)
 		}
