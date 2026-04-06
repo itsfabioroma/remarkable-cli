@@ -2,7 +2,12 @@ package transport
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
+	"hash/crc32"
 	"fmt"
 	"io"
 	"net/http"
@@ -126,12 +131,24 @@ func (t *CloudTransport) ReadFile(docID, path string) (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
+// WriteFile uploads a file blob to the cloud via sync v3
+// This uploads the blob but does NOT update the root index — call SyncRoot after all writes
 func (t *CloudTransport) WriteFile(docID, path string, r io.Reader) error {
-	return model.NewCLIError(model.ErrUnsupported, "cloud",
-		"cloud upload not yet implemented.\n  remarkable connect <host>    # use SSH for write access")
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+
+	// compute SHA256 hash of the content
+	hash := computeSHA256(data)
+
+	// PUT the blob
+	return t.authPut(filesURL+"/"+hash, data, docID+"."+path)
 }
 
 func (t *CloudTransport) DeleteDocument(docID string) error {
+	// cloud deletion requires rebuilding the root index without this doc
+	// complex — defer for now
 	return model.NewCLIError(model.ErrUnsupported, "cloud",
 		"cloud deletion not yet implemented.\n  remarkable connect <host>    # use SSH for delete")
 }
@@ -173,8 +190,13 @@ func (t *CloudTransport) GetMetadata(docID string) (*model.Metadata, error) {
 }
 
 func (t *CloudTransport) SetMetadata(docID string, m *model.Metadata) error {
-	return model.NewCLIError(model.ErrUnsupported, "cloud",
-		"cloud metadata writes not yet implemented.\n  remarkable connect <host>    # use SSH for metadata writes")
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	hash := computeSHA256(data)
+	return t.authPut(filesURL+"/"+hash, data, docID+".metadata")
 }
 
 // --- internals ---
@@ -312,6 +334,48 @@ func (t *CloudTransport) authGet(url string) ([]byte, error) {
 	}
 
 	return io.ReadAll(resp.Body)
+}
+
+// authPut uploads data to the cloud with authentication
+func (t *CloudTransport) authPut(url string, data []byte, rmFilename string) error {
+	req, _ := http.NewRequest("PUT", url, bytes.NewReader(data))
+	req.Header.Set("Authorization", "Bearer "+t.tokens.UserToken)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	if rmFilename != "" {
+		req.Header.Set("rm-filename", rmFilename)
+	}
+	// Google Cloud Storage requires CRC32C checksum
+	req.Header.Set("x-goog-hash", "crc32c="+computeCRC32C(data))
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return model.NewCLIError(model.ErrTransportUnavailable, "cloud",
+			fmt.Sprintf("cloud PUT failed: %v", err))
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return model.NewCLIError(model.ErrTransportUnavailable, "cloud",
+			fmt.Sprintf("cloud PUT returned %d: %s", resp.StatusCode, string(body)))
+	}
+
+	return nil
+}
+
+// computeSHA256 returns the hex-encoded SHA256 hash of data
+func computeSHA256(data []byte) string {
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:])
+}
+
+// computeCRC32C returns base64-encoded CRC32C (Castagnoli) checksum
+func computeCRC32C(data []byte) string {
+	table := crc32.MakeTable(crc32.Castagnoli)
+	crc := crc32.Checksum(data, table)
+	b := make([]byte, 4)
+	binary.BigEndian.PutUint32(b, crc)
+	return base64.StdEncoding.EncodeToString(b)
 }
 
 func (t *CloudTransport) fetchDocMeta(hash, docID string) (*model.Document, error) {
