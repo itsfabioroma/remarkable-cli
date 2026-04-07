@@ -3,12 +3,14 @@ package transport
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -508,9 +510,10 @@ func (t *CloudTransport) authGet(url string) ([]byte, error) {
 func (t *CloudTransport) authPut(url string, data []byte, rmFilename string) error {
 	req, _ := http.NewRequest("PUT", url, bytes.NewReader(data))
 	req.Header.Set("Authorization", "Bearer "+t.tokens.UserToken)
-	req.Header.Set("Content-Type", "application/octet-stream")
+	req.ContentLength = int64(len(data))
 	req.Header.Set("rm-filename", rmFilename)
-	req.Header.Set("rm-filesize", strconv.Itoa(len(data)))
+	req.Header.Set("rm-filesize", fmt.Sprintf("%d", len(data)))
+	req.Header.Set("x-goog-hash", "crc32c="+crc32cBase64(data))
 
 	resp, err := t.client.Do(req)
 	if err != nil {
@@ -562,4 +565,13 @@ func (t *CloudTransport) updateRoot(newHash string, generation int64) error {
 func sha256Hex(data []byte) string {
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:])
+}
+
+// crc32cBase64 returns base64-encoded CRC32C (Castagnoli) checksum
+func crc32cBase64(data []byte) string {
+	table := crc32.MakeTable(crc32.Castagnoli)
+	c := crc32.Checksum(data, table)
+	b := make([]byte, 4)
+	binary.BigEndian.PutUint32(b, c)
+	return base64.StdEncoding.EncodeToString(b)
 }

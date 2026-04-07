@@ -236,7 +236,9 @@ func printTree(tree *model.Tree, parentID string, depth int) {
 // syncCloudDoc finalizes a cloud upload by building doc + root indexes
 func syncCloudDoc(t transport.Transport, docID string) {
 	if ct, ok := t.(*transport.CloudTransport); ok {
-		ct.SyncDoc(docID)
+		if err := ct.SyncDoc(docID); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: cloud sync failed: %v\n", err)
+		}
 	}
 }
 
