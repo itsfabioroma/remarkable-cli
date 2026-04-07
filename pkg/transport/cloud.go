@@ -263,7 +263,8 @@ func (t *CloudTransport) SyncDoc(docID string) error {
 	docIndexBody := t.buildDocIndex(docID)
 	docIndexHash := sha256Hex(docIndexBody)
 
-	// upload doc index blob
+	// upload doc index blob (delay to avoid 429)
+	time.Sleep(1 * time.Second)
 	if err := t.authPut(filesURL+"/"+docIndexHash, docIndexBody, docID); err != nil {
 		return err
 	}
@@ -292,11 +293,13 @@ func (t *CloudTransport) SyncDoc(docID string) error {
 	rootIndexBody := []byte(strings.Join(newRootLines, "\n"))
 	rootIndexHash := sha256Hex(rootIndexBody)
 
+	time.Sleep(1 * time.Second)
 	if err := t.authPut(filesURL+"/"+rootIndexHash, rootIndexBody, "root"); err != nil {
 		return err
 	}
 
 	// atomic root update
+	time.Sleep(1 * time.Second)
 	return t.updateRoot(rootIndexHash, t.rootGeneration+1)
 }
 
@@ -559,27 +562,41 @@ func (t *CloudTransport) authGet(url string) ([]byte, error) {
 
 // authPut uploads a blob with rm-filename and rm-filesize headers
 func (t *CloudTransport) authPut(url string, data []byte, rmFilename string) error {
-	req, _ := http.NewRequest("PUT", url, bytes.NewReader(data))
-	req.Header.Set("Authorization", "Bearer "+t.tokens.UserToken)
-	req.ContentLength = int64(len(data))
-	req.Header.Set("rm-filename", rmFilename)
-	req.Header.Set("rm-filesize", fmt.Sprintf("%d", len(data)))
-	req.Header.Set("x-goog-hash", "crc32c="+crc32cBase64(data))
+	// retry up to 3 times on 429
+	for attempt := 0; attempt < 3; attempt++ {
+		req, _ := http.NewRequest("PUT", url, bytes.NewReader(data))
+		req.Header.Set("Authorization", "Bearer "+t.tokens.UserToken)
+		req.ContentLength = int64(len(data))
+		req.Header.Set("rm-filename", rmFilename)
+		req.Header.Set("rm-filesize", fmt.Sprintf("%d", len(data)))
+		req.Header.Set("x-goog-hash", "crc32c="+crc32cBase64(data))
 
-	resp, err := t.client.Do(req)
-	if err != nil {
-		return model.NewCLIError(model.ErrTransportUnavailable, "cloud",
-			fmt.Sprintf("cloud PUT failed: %v", err))
+		resp, err := t.client.Do(req)
+		if err != nil {
+			return model.NewCLIError(model.ErrTransportUnavailable, "cloud",
+				fmt.Sprintf("cloud PUT failed: %v", err))
+		}
+
+		if resp.StatusCode == 429 {
+			resp.Body.Close()
+			wait := time.Duration(3*(attempt+1)) * time.Second
+			time.Sleep(wait)
+			continue
+		}
+
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+			body, _ := io.ReadAll(resp.Body)
+			return model.NewCLIError(model.ErrTransportUnavailable, "cloud",
+				fmt.Sprintf("cloud PUT returned %d: %s", resp.StatusCode, string(body)))
+		}
+
+		return nil
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return model.NewCLIError(model.ErrTransportUnavailable, "cloud",
-			fmt.Sprintf("cloud PUT returned %d: %s", resp.StatusCode, string(body)))
-	}
-
-	return nil
+	return model.NewCLIError(model.ErrTransportUnavailable, "cloud",
+		"cloud PUT rate limited after 3 retries. Wait a minute and try again.")
 }
 
 // updateRoot atomically updates the root hash with generation check
