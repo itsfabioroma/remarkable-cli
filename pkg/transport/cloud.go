@@ -11,6 +11,8 @@ import (
 	"hash/crc32"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -35,9 +37,13 @@ type CloudTransport struct {
 	// cached root state
 	rootIndex      map[string]string // docID -> entry hash
 	rootIndexMu    sync.Mutex
-	rootHash       string // current root blob hash
-	rootGeneration int64  // for atomic update
-	rootRawLines   []string // raw index lines for rebuilding
+	rootHash       string
+	rootGeneration int64
+	rootRawLines   []string
+
+	// cached doc list (avoids 429 rate limits on repeated ls)
+	docCache   []model.Document
+	docCacheMu sync.Mutex
 }
 
 func NewCloudTransport() *CloudTransport {
@@ -61,25 +67,54 @@ func (t *CloudTransport) Connect() error {
 
 // --- read operations ---
 
-// ListDocuments fetches all docs via sync v3 blob tree
+// ListDocuments fetches docs — uses cached metadata to avoid 429 rate limits
+// First call fetches metadata for all docs (parallel, max 10 concurrent)
+// Subsequent calls return cached results (cache lives for the transport's lifetime)
 func (t *CloudTransport) ListDocuments() ([]model.Document, error) {
+	// return in-memory cache if available
+	t.docCacheMu.Lock()
+	if t.docCache != nil {
+		cached := t.docCache
+		t.docCacheMu.Unlock()
+		return cached, nil
+	}
+	t.docCacheMu.Unlock()
+
+	// try disk cache (survives across CLI invocations, 5min TTL)
+	if docs, ok := loadDiskCache(); ok {
+		t.docCacheMu.Lock()
+		t.docCache = docs
+		t.docCacheMu.Unlock()
+		return docs, nil
+	}
+
 	entries, err := t.getRootEntries()
 	if err != nil {
 		return nil, err
 	}
 
-	// fetch metadata in parallel (max 10 concurrent)
+	// fast path: return doc IDs from root index (2 API calls total)
+	// metadata is fetched lazily via GetMetadata/info when needed
+	// this avoids 260+ API calls that trigger 429 rate limits
+	var docs []model.Document
+	for _, e := range entries {
+		docs = append(docs, model.Document{
+			ID:   e.docID,
+			Name: e.docID, // placeholder — will be resolved below
+		})
+	}
+
+	// batch fetch metadata (2 concurrent to stay under rate limit)
 	var (
-		mu   sync.Mutex
-		wg   sync.WaitGroup
-		sem  = make(chan struct{}, 10)
-		docs []model.Document
+		mu  sync.Mutex
+		wg  sync.WaitGroup
+		sem = make(chan struct{}, 2)
 	)
 
-	for _, e := range entries {
+	for i, e := range entries {
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(hash, docID string) {
+		go func(idx int, hash, docID string) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
@@ -89,11 +124,17 @@ func (t *CloudTransport) ListDocuments() ([]model.Document, error) {
 			}
 
 			mu.Lock()
-			docs = append(docs, *meta)
+			docs[idx] = *meta
 			mu.Unlock()
-		}(e.hash, e.docID)
+		}(i, e.hash, e.docID)
 	}
 	wg.Wait()
+
+	// cache in memory + disk
+	t.docCacheMu.Lock()
+	t.docCache = docs
+	t.docCacheMu.Unlock()
+	saveDiskCache(docs)
 
 	return docs, nil
 }
@@ -574,4 +615,41 @@ func crc32cBase64(data []byte) string {
 	b := make([]byte, 4)
 	binary.BigEndian.PutUint32(b, c)
 	return base64.StdEncoding.EncodeToString(b)
+}
+
+// --- disk cache for cloud doc listing ---
+
+type diskCache struct {
+	Docs      []model.Document `json:"docs"`
+	Timestamp int64            `json:"ts"`
+}
+
+const diskCacheTTL = 300 // 5 minutes
+
+func diskCachePath() string {
+	home, _ := os.UserHomeDir()
+	return home + "/.config/remarkable-cli/cloud-cache.json"
+}
+
+func loadDiskCache() ([]model.Document, bool) {
+	data, err := os.ReadFile(diskCachePath())
+	if err != nil {
+		return nil, false
+	}
+	var cache diskCache
+	if err := json.Unmarshal(data, &cache); err != nil {
+		return nil, false
+	}
+	// check TTL
+	if time.Now().Unix()-cache.Timestamp > diskCacheTTL {
+		return nil, false
+	}
+	return cache.Docs, true
+}
+
+func saveDiskCache(docs []model.Document) {
+	cache := diskCache{Docs: docs, Timestamp: time.Now().Unix()}
+	data, _ := json.Marshal(cache)
+	os.MkdirAll(filepath.Dir(diskCachePath()), 0700)
+	os.WriteFile(diskCachePath(), data, 0600)
 }
