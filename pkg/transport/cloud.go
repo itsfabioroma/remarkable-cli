@@ -93,22 +93,19 @@ func (t *CloudTransport) ListDocuments() ([]model.Document, error) {
 		return nil, err
 	}
 
-	// fast path: return doc IDs from root index (2 API calls total)
-	// metadata is fetched lazily via GetMetadata/info when needed
-	// this avoids 260+ API calls that trigger 429 rate limits
-	var docs []model.Document
-	for _, e := range entries {
-		docs = append(docs, model.Document{
-			ID:   e.docID,
-			Name: e.docID, // placeholder — will be resolved below
-		})
+	// two-phase: first get all doc IDs (2 API calls), then fetch metadata
+	// in small batches with delays to avoid 429 rate limits
+
+	docs := make([]model.Document, len(entries))
+	for i, e := range entries {
+		docs[i] = model.Document{ID: e.docID, Name: e.docID}
 	}
 
-	// batch fetch metadata (2 concurrent to stay under rate limit)
+	// fetch metadata in small batches (3 concurrent, 100ms delay between batches)
 	var (
 		mu  sync.Mutex
 		wg  sync.WaitGroup
-		sem = make(chan struct{}, 2)
+		sem = make(chan struct{}, 3)
 	)
 
 	for i, e := range entries {
@@ -127,16 +124,29 @@ func (t *CloudTransport) ListDocuments() ([]model.Document, error) {
 			docs[idx] = *meta
 			mu.Unlock()
 		}(i, e.hash, e.docID)
+
+		// pace requests: pause every 20 docs
+		if i > 0 && i%20 == 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
 	}
 	wg.Wait()
 
+	// remove docs that failed metadata fetch (still have ID as name)
+	var filtered []model.Document
+	for _, d := range docs {
+		if d.Name != d.ID {
+			filtered = append(filtered, d)
+		}
+	}
+
 	// cache in memory + disk
 	t.docCacheMu.Lock()
-	t.docCache = docs
+	t.docCache = filtered
 	t.docCacheMu.Unlock()
-	saveDiskCache(docs)
+	saveDiskCache(filtered)
 
-	return docs, nil
+	return filtered, nil
 }
 
 // ReadFile downloads a file from the cloud blob tree
