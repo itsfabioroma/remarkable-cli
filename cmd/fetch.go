@@ -60,17 +60,22 @@ Validates Content-Type is application/pdf. Filename comes from Content-Dispositi
 			return err
 		}
 
-		// save to temp file
+		// save to temp file → wrap in CLIError envelope
 		tmp, err := os.CreateTemp("", "remarkable-fetch-*.pdf")
 		if err != nil {
-			return err
+			e := model.NewCLIError(model.ErrIO, "", fmt.Sprintf("cannot create temp file: %v", err))
+			outputError(e)
+			return e
 		}
 		defer os.Remove(tmp.Name())
 		defer tmp.Close()
 
+		// stream download → wrap copy errors
 		size, err := io.Copy(tmp, resp.Body)
 		if err != nil {
-			return err
+			e := model.NewCLIError(model.ErrIO, "", fmt.Sprintf("download failed: %v", err))
+			outputError(e)
+			return e
 		}
 		tmp.Seek(0, 0)
 

@@ -90,7 +90,12 @@ Uses SSH when available, falls back to cloud automatically. Renders strokes from
 		if outDir == "" {
 			outDir = doc.Name + "_export"
 		}
-		os.MkdirAll(outDir, 0755)
+		// create output dir → wrap in CLIError envelope
+		if err := os.MkdirAll(outDir, 0755); err != nil {
+			e := model.NewCLIError(model.ErrIO, "", fmt.Sprintf("cannot create %s: %v", outDir, err))
+			outputError(e)
+			return e
+		}
 
 		// download source file for PDF/EPUB documents
 		var sourceFile string
@@ -100,7 +105,12 @@ Uses SSH when available, falls back to cloud automatically. Renders strokes from
 				sourceData, _ := io.ReadAll(rc)
 				rc.Close()
 				sourceFile = filepath.Join(outDir, doc.Name+"."+doc.FileType)
-				os.WriteFile(sourceFile, sourceData, 0644)
+				// write source file → wrap in CLIError envelope
+				if err := os.WriteFile(sourceFile, sourceData, 0644); err != nil {
+					e := model.NewCLIError(model.ErrIO, "", fmt.Sprintf("cannot write %s: %v", sourceFile, err))
+					outputError(e)
+					return e
+				}
 			}
 		}
 

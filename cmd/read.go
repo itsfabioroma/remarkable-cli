@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/itsfabioroma/remarkable-cli/pkg/model"
 	"github.com/spf13/cobra"
 )
 
@@ -88,13 +89,13 @@ Requires poppler-utils (pdftotext) for PDFs. EPUBs are parsed natively.`,
 func extractPDF(data []byte, page int) (string, int, error) {
 	// check pdftotext is available
 	if _, err := exec.LookPath("pdftotext"); err != nil {
-		return "", 0, fmt.Errorf("install poppler-utils for PDF text extraction (brew install poppler)")
+		return "", 0, model.NewCLIError(model.ErrUnsupported, "", "install poppler-utils for PDF text extraction (brew install poppler)")
 	}
 
-	// write to temp file
+	// write to temp file → wrap in CLIError envelope
 	tmp, err := os.CreateTemp("", "remarkable-*.pdf")
 	if err != nil {
-		return "", 0, err
+		return "", 0, model.NewCLIError(model.ErrIO, "", fmt.Sprintf("cannot create temp file: %v", err))
 	}
 	defer os.Remove(tmp.Name())
 	tmp.Write(data)
@@ -107,9 +108,10 @@ func extractPDF(data []byte, page int) (string, int, error) {
 	}
 	args = append(args, tmp.Name(), "-")
 
+	// run pdftotext → wrap exec errors
 	out, err := exec.Command("pdftotext", args...).Output()
 	if err != nil {
-		return "", 0, fmt.Errorf("pdftotext failed: %w", err)
+		return "", 0, model.NewCLIError(model.ErrIO, "", fmt.Sprintf("pdftotext failed: %v", err))
 	}
 
 	// count pages with pdfinfo

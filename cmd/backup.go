@@ -53,7 +53,12 @@ Use --raw for an unprocessed tar.gz of the xochitl directory.`,
 
 // backupRawMode tars the xochitl directory and downloads it
 func backupRawMode(sshT *transport.SSHTransport, dest string) error {
-	os.MkdirAll(dest, 0755)
+	// create destination dir → wrap in CLIError envelope
+	if err := os.MkdirAll(dest, 0755); err != nil {
+		e := model.NewCLIError(model.ErrIO, "", fmt.Sprintf("cannot create %s: %v", dest, err))
+		outputError(e)
+		return e
+	}
 	tarPath := filepath.Join(dest, "xochitl-backup.tar.gz")
 
 	// create tar on device
@@ -75,8 +80,11 @@ func backupRawMode(sshT *transport.SSHTransport, dest string) error {
 	if err != nil {
 		return fmt.Errorf("base64 decode failed: %w", err)
 	}
+	// write tarball to local disk → wrap in CLIError envelope
 	if err := os.WriteFile(tarPath, decoded, 0644); err != nil {
-		return fmt.Errorf("write failed: %w", err)
+		e := model.NewCLIError(model.ErrIO, "", fmt.Sprintf("cannot write %s: %v", tarPath, err))
+		outputError(e)
+		return e
 	}
 
 	// cleanup remote
@@ -96,7 +104,12 @@ func backupStructured(sshT *transport.SSHTransport, dest string) error {
 	}
 
 	tree := model.NewTree(docs)
-	os.MkdirAll(dest, 0755)
+	// create backup root → wrap in CLIError envelope
+	if err := os.MkdirAll(dest, 0755); err != nil {
+		e := model.NewCLIError(model.ErrIO, "", fmt.Sprintf("cannot create %s: %v", dest, err))
+		outputError(e)
+		return e
+	}
 
 	totalDocs := 0
 	totalPages := 0
@@ -110,7 +123,12 @@ func backupStructured(sshT *transport.SSHTransport, dest string) error {
 		// build local path from tree
 		treePath := tree.Path(doc.ID)
 		localDir := filepath.Join(dest, filepath.FromSlash(treePath))
-		os.MkdirAll(localDir, 0755)
+		// create per-doc dir → wrap in CLIError envelope
+		if err := os.MkdirAll(localDir, 0755); err != nil {
+			e := model.NewCLIError(model.ErrIO, "", fmt.Sprintf("cannot create %s: %v", localDir, err))
+			outputError(e)
+			return e
+		}
 
 		fmt.Fprintf(os.Stderr, "backing up: %s\n", treePath)
 		totalDocs++

@@ -5,6 +5,7 @@ import (
 	"image/png"
 	"os"
 
+	"github.com/itsfabioroma/remarkable-cli/pkg/model"
 	"github.com/spf13/cobra"
 )
 
@@ -35,14 +36,24 @@ var screenshotCmd = &cobra.Command{
 			outPath = args[0]
 		}
 
+		// create local PNG → wrap in CLIError envelope
 		f, err := os.Create(outPath)
 		if err != nil {
-			return fmt.Errorf("cannot create %s: %w", outPath, err)
+			code := model.ErrIO
+			if os.IsNotExist(err) {
+				code = model.ErrNotFound
+			}
+			e := model.NewCLIError(code, "", fmt.Sprintf("cannot create %s: %v", outPath, err))
+			outputError(e)
+			return e
 		}
 		defer f.Close()
 
+		// encode PNG → wrap encode errors
 		if err := png.Encode(f, img); err != nil {
-			return fmt.Errorf("cannot encode PNG: %w", err)
+			e := model.NewCLIError(model.ErrIO, "", fmt.Sprintf("cannot encode %s: %v", outPath, err))
+			outputError(e)
+			return e
 		}
 
 		output(map[string]any{

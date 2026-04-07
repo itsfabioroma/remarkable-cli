@@ -11,6 +11,7 @@ import (
 
 	"github.com/itsfabioroma/remarkable-cli/pkg/model"
 	"github.com/itsfabioroma/remarkable-cli/pkg/transport"
+	"github.com/itsfabioroma/remarkable-cli/pkg/update"
 	"github.com/spf13/cobra"
 )
 
@@ -71,8 +72,15 @@ var errorEmitted bool
 
 // Execute is the single funnel: every error becomes a CLIError before exit
 func Execute() {
+	// fire-and-forget GitHub check once per day (never blocks)
+	update.BackgroundCheck()
+
 	err := rootCmd.Execute()
+
+	// show a one-line "update available" banner after the command succeeds
+	// (stderr only, suppressed when --json or stderr is not a TTY)
 	if err == nil {
+		update.Notify(isStderrTerminal(), flagJSON)
 		return
 	}
 	cliErr := toCLIError(err)
@@ -80,6 +88,16 @@ func Execute() {
 		outputError(cliErr)
 	}
 	os.Exit(1)
+}
+
+// isStderrTerminal returns true when stderr is a real TTY (not a pipe/file).
+// Used to gate the update banner so it never pollutes agent output.
+func isStderrTerminal() bool {
+	fi, err := os.Stderr.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
 // toCLIError wraps any error into the structured envelope

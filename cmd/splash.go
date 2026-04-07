@@ -83,25 +83,36 @@ Screens: sleep (default), poweroff, starting, battery, reboot.`,
 		}
 		defer sshT.Close()
 
-		// decode source image
+		// decode source image → wrap in CLIError envelope
 		srcFile, err := os.Open(imagePath)
 		if err != nil {
-			return fmt.Errorf("cannot open image: %w", err)
+			code := model.ErrIO
+			if os.IsNotExist(err) {
+				code = model.ErrNotFound
+			}
+			e := model.NewCLIError(code, "", fmt.Sprintf("cannot read %s: %v", imagePath, err))
+			outputError(e)
+			return e
 		}
 		defer srcFile.Close()
 
+		// decode image bytes → wrap decode errors
 		srcImg, _, err := image.Decode(srcFile)
 		if err != nil {
-			return fmt.Errorf("cannot decode image: %w", err)
+			e := model.NewCLIError(model.ErrUnsupported, "", fmt.Sprintf("cannot decode %s: %v", imagePath, err))
+			outputError(e)
+			return e
 		}
 
 		// resize to device dimensions (fit, center, white background)
 		resized := fitToScreen(srcImg, ppSplashW, ppSplashH)
 
-		// encode to PNG
+		// encode to PNG → wrap encode errors
 		var buf bytes.Buffer
 		if err := png.Encode(&buf, resized); err != nil {
-			return fmt.Errorf("cannot encode PNG: %w", err)
+			e := model.NewCLIError(model.ErrIO, "", fmt.Sprintf("cannot encode PNG: %v", err))
+			outputError(e)
+			return e
 		}
 
 		// remount rw + backup original
