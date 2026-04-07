@@ -10,24 +10,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// searchResult is the JSON-friendly output for each match
-type searchResult struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Path         string `json:"path"`
-	Type         string `json:"type"`
-	FileType     string `json:"fileType,omitempty"`
-	PageCount    int    `json:"pageCount,omitempty"`
-	LastModified string `json:"lastModified"`
-}
 
 var searchCmd = &cobra.Command{
 	Use:   "search <query>",
 	Short: "Search documents by name",
-	Long: `Search documents by name across the library.
+	Long: `Search documents by name (case-insensitive substring) across the library.
 
-  remarkable search "meeting"         # fuzzy name search
-  remarkable search "PMF" --tag work  # search within tagged docs`,
+Combine with --tag to scope results to a tag (requires SSH).`,
+	Example: `  remarkable search "meeting"
+  remarkable search "PMF" --tag work`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		query := args[0]
@@ -90,28 +81,15 @@ var searchCmd = &cobra.Command{
 		// case-insensitive substring match on name
 		lowerQuery := strings.ToLower(query)
 		tree := model.NewTree(docs)
-		var results []searchResult
+		results := make([]model.Document, 0)
 
 		for _, d := range docs {
 			if !strings.Contains(strings.ToLower(d.Name), lowerQuery) {
 				continue
 			}
-
-			results = append(results, searchResult{
-				ID:           d.ID,
-				Name:         d.Name,
-				Path:         tree.Path(d.ID),
-				Type:         string(d.Type),
-				FileType:     d.FileType,
-				PageCount:    d.PageCount,
-				LastModified: d.LastModified.Format("2006-01-02T15:04:05Z"),
-			})
-		}
-
-		// output results
-		if len(results) == 0 {
-			output([]searchResult{})
-			return nil
+			doc := d
+			doc.Path = tree.Path(d.ID)
+			results = append(results, doc)
 		}
 
 		output(results)

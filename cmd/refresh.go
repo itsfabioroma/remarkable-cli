@@ -7,6 +7,8 @@ import (
 var refreshCmd = &cobra.Command{
 	Use:   "refresh",
 	Short: "Restart the device UI so recent changes become visible",
+	Long: `Restart xochitl (the reMarkable UI) over SSH so any filesystem changes — uploads, deletes, page edits — become visible immediately.`,
+	Example: `  remarkable refresh`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sshT, err := getSSH()
 		if err != nil {

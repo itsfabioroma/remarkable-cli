@@ -11,6 +11,9 @@ import (
 var screenshotCmd = &cobra.Command{
 	Use:   "screenshot [output.png]",
 	Short: "Capture the device screen",
+	Long: `Capture the current reMarkable screen as a PNG. Defaults to ./screenshot.png if no path is given.`,
+	Example: `  remarkable screenshot
+  remarkable screenshot /tmp/rm.png`,
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sshT, err := getSSH()

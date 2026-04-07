@@ -19,10 +19,11 @@ var readPage int
 var readCmd = &cobra.Command{
 	Use:   "read <name>",
 	Short: "Extract text from PDFs and EPUBs on the device",
-	Long: `Extract text content from PDF or EPUB documents.
+	Long: `Extract text content from PDF or EPUB documents on the device.
 
-  remarkable read "Book Title"              # full text
-  remarkable read "Book Title" --page 5     # single page (PDF only)`,
+Requires poppler-utils (pdftotext) for PDFs. EPUBs are parsed natively.`,
+	Example: `  remarkable read "My Notes"
+  remarkable read "Book Title" --page 5`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		t, err := getTransport()

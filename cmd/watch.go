@@ -19,6 +19,11 @@ var watchOnChange string
 var watchCmd = &cobra.Command{
 	Use:   "watch",
 	Short: "Watch for document changes and exec hooks",
+	Long: `Stream document change events from the device. Optionally exec a shell command on each change with {id} and {type} placeholders.
+
+Requires SSH transport.`,
+	Example: `  remarkable watch
+  remarkable watch --on-change "remarkable export {id}"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		t, err := getTransport()
 		if err != nil {

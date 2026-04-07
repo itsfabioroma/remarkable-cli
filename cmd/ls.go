@@ -16,6 +16,12 @@ var flagTag string
 var lsCmd = &cobra.Command{
 	Use:   "ls [path]",
 	Short: "List documents and folders",
+	Long: `List documents and folders on your reMarkable.
+
+Returns JSON by default when called by an agent. Use --all to include trashed docs, or --tag to filter by tag (SSH only).`,
+	Example: `  remarkable ls
+  remarkable ls --all
+  remarkable ls --tag work`,
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		t, err := getTransport()

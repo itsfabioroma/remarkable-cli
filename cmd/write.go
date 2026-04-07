@@ -23,12 +23,12 @@ var (
 var writeCmd = &cobra.Command{
 	Use:   "write <notebook>",
 	Short: "Write text as pen strokes on a notebook page",
-	Long: `Writes text onto a notebook page. Auto-scales to fit, wraps long lines.
-When writing to an existing page, appends below existing content.
+	Long: `Writes text onto a notebook page as pen strokes. Auto-scales to fit and wraps long lines.
 
-  remarkable write "My Notebook" --text "Meeting notes here"
-  remarkable write "My Notebook" --text "Page 2 content" --page 2
-  remarkable write "My Notebook" --text "New page" --new-page`,
+When writing to an existing page, appends below existing content. Use --new-page to add a fresh page.`,
+	Example: `  remarkable write "NB" --text "Hello"
+  remarkable write "NB" --text "More" --new-page
+  remarkable write "NB" --text "Page 2" --page 2`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if writeText == "" {

@@ -42,6 +42,10 @@ var splashNames = map[string]string{
 var splashCmd = &cobra.Command{
 	Use:   "splash",
 	Short: "Manage device splash screens",
+	Long: `Manage the splash screens shown during sleep, power off, boot, etc. Use the subcommands set, list, restore.`,
+	Example: `  remarkable splash list
+  remarkable splash set art.png
+  remarkable splash restore`,
 }
 
 // --- splash set ---
@@ -49,10 +53,11 @@ var splashCmd = &cobra.Command{
 var splashSetCmd = &cobra.Command{
 	Use:   "set <image> [screen]",
 	Short: "Replace a splash screen",
-	Long: `Replace a splash screen. Auto-resizes to fit Paper Pro (1620x2160).
-Backs up the original first. Accepts PNG, JPG.
+	Long: `Replace a splash screen. Auto-resizes to fit Paper Pro (1620x2160), backs up the original first. Accepts PNG and JPG.
 
-Screens: sleep (default), poweroff, starting, battery, reboot`,
+Screens: sleep (default), poweroff, starting, battery, reboot.`,
+	Example: `  remarkable splash set art.png
+  remarkable splash set logo.jpg poweroff`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		imagePath := args[0]
@@ -140,6 +145,8 @@ Screens: sleep (default), poweroff, starting, battery, reboot`,
 var splashListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List current splash screens on device",
+	Long: `List every splash screen file on the device, whether it exists, and whether a backup of the original is available.`,
+	Example: `  remarkable splash list`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sshT, err := getSSH()
 		if err != nil {
@@ -176,6 +183,9 @@ var splashListCmd = &cobra.Command{
 var splashRestoreCmd = &cobra.Command{
 	Use:   "restore [screen]",
 	Short: "Restore original splash screen from backup",
+	Long: `Restore the original factory splash screen from the backup made when you first ran "splash set".`,
+	Example: `  remarkable splash restore
+  remarkable splash restore poweroff`,
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		screenName := "sleep"

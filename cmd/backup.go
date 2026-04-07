@@ -21,11 +21,12 @@ var backupRaw bool
 var backupCmd = &cobra.Command{
 	Use:   "backup [path]",
 	Short: "Full device backup via SSH",
-	Long: `Backup all documents from the reMarkable device.
+	Long: `Backup all documents from the reMarkable, preserving folder structure and rendering pages to PNG.
 
-  remarkable backup                    # backup to ./remarkable-backup/
-  remarkable backup /path/to/dir       # custom destination
-  remarkable backup --raw              # raw xochitl tar.gz (no structure)`,
+Use --raw for an unprocessed tar.gz of the xochitl directory.`,
+	Example: `  remarkable backup
+  remarkable backup /path/to/dir
+  remarkable backup --raw`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sshT, err := getSSH()

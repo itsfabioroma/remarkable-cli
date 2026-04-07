@@ -23,11 +23,11 @@ var exportCmd = &cobra.Command{
 	Use:   "export <name>",
 	Short: "Export notebook pages to SVG or PNG",
 	Long: `Export handwritten pages as PNG (default) or SVG.
-Uses SSH when available, falls back to cloud automatically.
 
-  remarkable export "Main"                  # all pages → PNG
-  remarkable export "Main" --page 19        # single page
-  remarkable export "Main" --svg            # SVG instead of PNG`,
+Uses SSH when available, falls back to cloud automatically. Renders strokes from the v6 .rm format.`,
+	Example: `  remarkable export "Notebook" -o /tmp
+  remarkable export "Notebook" --svg
+  remarkable export "Notebook" --page 3`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		t, err := getTransport()

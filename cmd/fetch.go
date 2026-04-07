@@ -19,6 +19,11 @@ import (
 var fetchCmd = &cobra.Command{
 	Use:   "fetch <url> [folder]",
 	Short: "Download a PDF from a URL and upload to the device",
+	Long: `Download a PDF from a URL and upload it directly to the reMarkable.
+
+Validates Content-Type is application/pdf. Filename comes from Content-Disposition or URL path.`,
+	Example: `  remarkable fetch https://arxiv.org/pdf/2401.12345.pdf
+  remarkable fetch https://example.com/paper.pdf "Research"`,
 	Args:  cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		url := args[0]

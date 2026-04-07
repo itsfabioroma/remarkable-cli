@@ -16,6 +16,12 @@ import (
 var putCmd = &cobra.Command{
 	Use:   "put <file> [folder]",
 	Short: "Upload a PDF or EPUB to the device",
+	Long: `Upload a local PDF or EPUB to your reMarkable, optionally into a specific folder.
+
+Requires SSH for fastest path. Cloud transport works as fallback.`,
+	Example: `  remarkable put report.pdf
+  remarkable put report.pdf "Work"
+  remarkable put book.epub "Reading"`,
 	Args:  cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		filePath := args[0]

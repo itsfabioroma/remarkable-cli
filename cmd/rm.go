@@ -10,6 +10,9 @@ import (
 var rmCmd = &cobra.Command{
 	Use:   "rm <name>",
 	Short: "Delete a document or folder",
+	Long: `Delete a document or folder. Resolves by name; errors if ambiguous.`,
+	Example: `  remarkable rm "Old Draft"
+  remarkable rm "Archive"`,
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		t, err := getTransport()

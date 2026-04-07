@@ -14,6 +14,8 @@ type Document struct {
 	CurrentPage    int       `json:"currentPage,omitempty"`
 	PageCount      int       `json:"pageCount,omitempty"`
 	FileType       string    `json:"fileType,omitempty"` // "pdf", "epub", ""
+	Path           string    `json:"path,omitempty"`     // tree-resolved path (info only)
+	Tags           []string  `json:"tags,omitempty"`     // document tags (info only)
 }
 
 // DocType distinguishes documents from folders

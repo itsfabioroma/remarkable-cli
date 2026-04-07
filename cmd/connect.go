@@ -46,12 +46,13 @@ func saveConfig(cfg *deviceConfig) error {
 var connectCmd = &cobra.Command{
 	Use:   "connect [host]",
 	Short: "Set up your reMarkable — cloud first, optional SSH for power users",
-	Long: `Interactive setup wizard.
+	Long: `Interactive setup wizard. Cloud first (works for everyone), then optional SSH for write access.
 
-  remarkable connect                        # full wizard
-  remarkable connect 192.168.1.5            # skip to SSH setup
-  remarkable connect --cloud-only           # cloud only, no SSH prompt
-  remarkable connect 192.168.1.5 --ssh-only # SSH only, no cloud prompt`,
+Saves credentials to ~/.config/remarkable-cli/device.json.`,
+	Example: `  remarkable connect
+  remarkable connect 192.168.1.5
+  remarkable connect --cloud-only
+  remarkable connect 192.168.1.5 --ssh-only --password mypass`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg := loadConfig()
@@ -204,6 +205,8 @@ func setupSSH(cfg *deviceConfig, reader *bufio.Reader, interactive bool, args []
 var disconnectCmd = &cobra.Command{
 	Use:   "disconnect",
 	Short: "Forget saved connection",
+	Long: `Remove the saved device configuration at ~/.config/remarkable-cli/device.json.`,
+	Example: `  remarkable disconnect`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		os.Remove(configPath())
 		fmt.Println("Disconnected.")

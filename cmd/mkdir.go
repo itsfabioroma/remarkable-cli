@@ -14,6 +14,9 @@ import (
 var mkdirCmd = &cobra.Command{
 	Use:   "mkdir <name>",
 	Short: "Create a folder on the device",
+	Long: `Create a new folder on the reMarkable. Use a slash-separated path to create inside an existing parent.`,
+	Example: `  remarkable mkdir "Projects"
+  remarkable mkdir "Work/Reports"`,
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		t, err := getTransport()

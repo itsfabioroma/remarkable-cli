@@ -13,6 +13,11 @@ import (
 var infoCmd = &cobra.Command{
 	Use:   "info <name>",
 	Short: "Show detailed info about a document",
+	Long: `Show detailed info about a single document or folder.
+
+Returns the same JSON shape as ls for one document, plus a tree-resolved path and tags.`,
+	Example: `  remarkable info "My Notes"
+  remarkable --json info "Meeting"`,
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		t, err := getTransport()
@@ -42,20 +47,9 @@ var infoCmd = &cobra.Command{
 			return err
 		}
 
-		doc := matches[0]
-
-		// build result
-		result := map[string]any{
-			"id":           doc.ID,
-			"name":         doc.Name,
-			"type":         doc.Type,
-			"path":         tree.Path(doc.ID),
-			"fileType":     doc.FileType,
-			"pageCount":    doc.PageCount,
-			"lastModified": doc.LastModified,
-			"pinned":       doc.Pinned,
-			"parent":       doc.Parent,
-		}
+		// canonical doc shape — same as ls, plus path + tags
+		doc := *matches[0]
+		doc.Path = tree.Path(doc.ID)
 
 		// try reading .content for tags (SSH only)
 		if sshT, ok := t.(*transport.SSHTransport); ok {
@@ -63,47 +57,46 @@ var infoCmd = &cobra.Command{
 			if err == nil {
 				var raw map[string]any
 				json.Unmarshal(rawContent, &raw)
-				tags := getStringSlice(raw, "tags")
-				if tags != nil {
-					result["tags"] = tags
+				if tags := getStringSlice(raw, "tags"); tags != nil {
+					doc.Tags = tags
 				}
 			}
 		}
 
 		// human-readable output for terminals
 		if !flagJSON && isTerminal() {
-			printDocInfo(result)
+			printDocInfo(&doc)
 			return nil
 		}
 
-		output(result)
+		output(doc)
 		return nil
 	},
 }
 
 // printDocInfo renders human-readable document info
-func printDocInfo(result map[string]any) {
-	fmt.Printf("Name:          %v\n", result["name"])
-	fmt.Printf("Path:          %v\n", result["path"])
-	fmt.Printf("Type:          %v\n", result["type"])
+func printDocInfo(d *model.Document) {
+	fmt.Printf("Name:          %s\n", d.Name)
+	fmt.Printf("Path:          %s\n", d.Path)
+	fmt.Printf("Type:          %s\n", d.Type)
 
-	if pc, ok := result["pageCount"].(int); ok && pc > 0 {
-		fmt.Printf("Pages:         %d\n", pc)
+	if d.PageCount > 0 {
+		fmt.Printf("Pages:         %d\n", d.PageCount)
 	}
-	if ft, ok := result["fileType"].(string); ok && ft != "" {
-		fmt.Printf("File type:     %s\n", ft)
+	if d.FileType != "" {
+		fmt.Printf("File type:     %s\n", d.FileType)
 	}
 
-	fmt.Printf("Last modified: %v\n", result["lastModified"])
+	fmt.Printf("Last modified: %s\n", d.LastModified)
 
-	if tags, ok := result["tags"].([]string); ok && len(tags) > 0 {
-		fmt.Printf("Tags:          %s\n", strings.Join(tags, ", "))
+	if len(d.Tags) > 0 {
+		fmt.Printf("Tags:          %s\n", strings.Join(d.Tags, ", "))
 	}
-	if pinned, ok := result["pinned"].(bool); ok && pinned {
+	if d.Pinned {
 		fmt.Printf("Pinned:        yes\n")
 	}
 
-	fmt.Printf("ID:            %v\n", result["id"])
+	fmt.Printf("ID:            %s\n", d.ID)
 }
 
 func init() { rootCmd.AddCommand(infoCmd) }

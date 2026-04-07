@@ -14,6 +14,9 @@ import (
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Health check — SSH, cloud, firmware, storage, doc count",
+	Long: `Probe the device: SSH reachability, cloud auth, firmware version, storage usage, and document count.`,
+	Example: `  remarkable status
+  remarkable --json status`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg := loadConfig()
 

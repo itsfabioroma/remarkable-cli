@@ -12,6 +12,11 @@ import (
 var getCmd = &cobra.Command{
 	Use:   "get <name>",
 	Short: "Download a document from the device",
+	Long: `Download a document (PDF or EPUB) from the reMarkable to the current directory.
+
+Resolves the document by name; errors if ambiguous. Saves with the original extension.`,
+	Example: `  remarkable get "My Notes"
+  remarkable get "Research Paper"`,
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		t, err := getTransport()

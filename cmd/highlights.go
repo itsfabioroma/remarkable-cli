@@ -36,11 +36,12 @@ type highlightResult struct {
 var highlightsCmd = &cobra.Command{
 	Use:   "highlights <name>",
 	Short: "Extract text highlights from a document",
-	Long: `Extract highlighted text passages as JSON or markdown.
+	Long: `Extract highlighted text passages from a document, as JSON or markdown.
 
-  remarkable highlights "Book Title"              # all highlights
-  remarkable highlights "Book Title" --page 5     # single page
-  remarkable highlights "Book Title" --markdown   # markdown blockquotes`,
+Reads .highlights/*.json files written by reMarkable when you highlight in PDFs/EPUBs.`,
+	Example: `  remarkable highlights "My Notes"
+  remarkable highlights "Book" --page 5
+  remarkable highlights "Book" --markdown`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		t, err := getTransport()

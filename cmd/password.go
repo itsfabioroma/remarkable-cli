@@ -15,7 +15,11 @@ const xochitlConf = "/home/root/.config/remarkable/xochitl.conf"
 var passwordCmd = &cobra.Command{
 	Use:   "password [new-password]",
 	Short: "Change the device SSH password",
-	Long:  "Updates DeveloperPassword in xochitl.conf (survives firmware updates), restarts xochitl.",
+	Long: `Updates DeveloperPassword in xochitl.conf (survives firmware updates) and restarts xochitl.
+
+If no password is given, prompts interactively.`,
+	Example: `  remarkable password newpass
+  remarkable password`,
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sshT, err := getSSH()
@@ -75,6 +79,8 @@ var passwordCmd = &cobra.Command{
 var setupKeyCmd = &cobra.Command{
 	Use:   "setup-key",
 	Short: "Install SSH public key for passwordless access",
+	Long: `Install your local SSH public key (id_ed25519.pub or id_rsa.pub) into the device's authorized_keys for passwordless login.`,
+	Example: `  remarkable setup-key`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sshT, err := getSSH()
 		if err != nil {
