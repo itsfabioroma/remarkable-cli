@@ -23,38 +23,65 @@ var (
 	flagKeyPath   string
 )
 
-// version embeds VCS info from runtime/debug at startup
-var version = computeVersion()
+// version is the display string for --version. Populated at startup:
+//  1. If main() set ldflag-injected version/commit/date (goreleaser), use those.
+//  2. Otherwise fall back to runtime/debug.ReadBuildInfo (plain `go build`).
+//  3. Otherwise "(dev)".
+var version = "0.1.0 (dev)"
 
-// computeVersion derives "v0.x.x (sha, date)" from build info, falls back to dev
-func computeVersion() string {
-	base := "0.1.0"
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return base + " (dev)"
+// SetVersionInfo is called from main.go with ldflag-injected values.
+// When goreleaser builds a release, these are set. Plain `go build` leaves
+// them empty and we fall back to runtime/debug.ReadBuildInfo.
+func SetVersionInfo(v, c, d string) {
+	version = formatVersion(v, c, d)
+	rootCmd.Version = version
+}
+
+// formatVersion renders "v0.x.x (sha, date)" from either ldflag values or
+// the embedded VCS info. Keeps a single canonical format for --version.
+func formatVersion(ldVersion, ldCommit, ldDate string) string {
+	ver := strings.TrimPrefix(ldVersion, "v")
+	rev := ldCommit
+	ts := ldDate
+
+	// goreleaser's .CommitDate is RFC3339 — trim to yyyy-mm-dd
+	if t, err := time.Parse(time.RFC3339, ts); err == nil {
+		ts = t.Format("2006-01-02")
 	}
-	var rev, ts string
-	for _, s := range info.Settings {
-		switch s.Key {
-		case "vcs.revision":
-			if len(s.Value) >= 7 {
-				rev = s.Value[:7]
-			} else {
-				rev = s.Value
-			}
-		case "vcs.time":
-			if t, err := time.Parse(time.RFC3339, s.Value); err == nil {
-				ts = t.Format("2006-01-02")
+
+	// fall back to runtime/debug when ldflags weren't set
+	if ver == "" || rev == "" || ts == "" {
+		if info, ok := debug.ReadBuildInfo(); ok {
+			for _, s := range info.Settings {
+				switch s.Key {
+				case "vcs.revision":
+					if rev == "" {
+						rev = s.Value
+					}
+				case "vcs.time":
+					if ts == "" {
+						if t, err := time.Parse(time.RFC3339, s.Value); err == nil {
+							ts = t.Format("2006-01-02")
+						}
+					}
+				}
 			}
 		}
 	}
+
+	if ver == "" {
+		ver = "0.1.0"
+	}
+	if len(rev) >= 7 {
+		rev = rev[:7]
+	}
 	if rev == "" {
-		return base + " (dev)"
+		return ver + " (dev)"
 	}
 	if ts == "" {
-		return fmt.Sprintf("%s (%s)", base, rev)
+		return fmt.Sprintf("%s (%s)", ver, rev)
 	}
-	return fmt.Sprintf("%s (%s, %s)", base, rev, ts)
+	return fmt.Sprintf("%s (%s, %s)", ver, rev, ts)
 }
 
 var rootCmd = &cobra.Command{

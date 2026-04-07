@@ -1,6 +1,9 @@
 # binary
 remarkable
 
+# goreleaser output
+dist/
+
 # OS
 .DS_Store
 

@@ -1,12 +1,43 @@
 # Contributing
 
-Agent-focused notes for hacking on `remarkable-cli`.
+Agent-focused notes for hacking on `remarkable-cli`. PRs welcome.
 
-## Build
+## Quick start
 
 ```bash
+git clone https://github.com/itsfabioroma/remarkable-cli
+cd remarkable-cli
 go build -o remarkable .
+go test ./...
 ```
+
+## Pull request flow
+
+1. Fork the repo + create a branch off `main`.
+2. Make the change. Keep commits small, use conventional-commit prefixes
+   (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`) — the release changelog
+   groups them automatically.
+3. Run `go test ./...` and `gofmt -w .` locally. CI runs `go vet`, `gofmt`
+   check, and the test matrix on ubuntu + macos.
+4. Open a PR against `main`. The PR template has a short checklist.
+5. For cloud-affecting changes, run the e2e suite locally first (needs a
+   real account):
+   ```bash
+   RMCLI_E2E_WRITE=1 go test ./e2e -v
+   ```
+
+## Releasing
+
+Releases are cut from git tags via goreleaser.
+
+```bash
+git tag -a v0.2.0 -m "release v0.2.0"
+git push origin v0.2.0
+```
+
+`.github/workflows/release.yml` picks up the tag and publishes a GitHub
+Release with darwin/linux × amd64/arm64 binaries, archives, and a
+`checksums.txt`. Users then get the update via `remarkable update`.
 
 ## Test
 

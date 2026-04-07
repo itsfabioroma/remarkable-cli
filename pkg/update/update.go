@@ -33,6 +33,9 @@ type Cache struct {
 	LastCheckUnix int64  `json:"last_check_unix"`
 	LatestSHA     string `json:"latest_sha"`
 	LatestDate    string `json:"latest_date"`
+	// LatestTag is the semver tag of the latest GitHub Release, if any.
+	// Empty string means we fell back to commits/main (no releases yet).
+	LatestTag string `json:"latest_tag,omitempty"`
 	// ShownForSHA suppresses repeat banners for the same upgrade
 	ShownForSHA string `json:"shown_for_sha,omitempty"`
 }
@@ -99,8 +102,44 @@ func shortSHA(sha string) string {
 	return sha
 }
 
-// latestCommit fetches the latest commit SHA on main via GitHub's public API
-// no auth needed for public repos; rate-limited to 60 req/hr per IP
+// latestRelease fetches the latest GitHub Release. Returns the tag name,
+// the commit SHA the release was built from, and the publish date.
+// Returns (empty, empty, empty, nil) when no release exists (404) —
+// callers should then fall back to latestCommit.
+func latestRelease(ctx context.Context) (tag, sha, date string, err error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", repoOwner, repoName)
+	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "remarkable-cli-update-check")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 404 {
+		return "", "", "", nil // no releases yet — caller should fall back
+	}
+	if resp.StatusCode != 200 {
+		return "", "", "", fmt.Errorf("github api returned %d", resp.StatusCode)
+	}
+
+	var body struct {
+		TagName     string `json:"tag_name"`
+		TargetSHA   string `json:"target_commitish"`
+		PublishedAt string `json:"published_at"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return "", "", "", err
+	}
+	return body.TagName, body.TargetSHA, body.PublishedAt, nil
+}
+
+// latestCommit fetches the latest commit SHA on main via GitHub's public API.
+// Used as a fallback when no GitHub Release exists. No auth needed for public
+// repos; rate-limited to 60 req/hr per IP.
 func latestCommit(ctx context.Context) (sha, date string, err error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/main", repoOwner, repoName)
 	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -132,6 +171,21 @@ func latestCommit(ctx context.Context) (sha, date string, err error) {
 	return body.SHA, body.Commit.Author.Date, nil
 }
 
+// fetchLatest tries releases first, falls back to main-branch commit.
+// Returns (tag, sha, date). tag is empty when falling back.
+func fetchLatest(ctx context.Context) (tag, sha, date string, err error) {
+	tag, sha, date, err = latestRelease(ctx)
+	if err != nil {
+		return "", "", "", err
+	}
+	if tag != "" {
+		return tag, sha, date, nil
+	}
+	// no release published yet — fall back to main-branch commit
+	sha, date, err = latestCommit(ctx)
+	return "", sha, date, err
+}
+
 // BackgroundCheck spawns a detached goroutine that refreshes the cache if
 // it's older than checkInterval. Returns immediately — never blocks the CLI.
 // Safe to call once per invocation from the main command path.
@@ -148,11 +202,12 @@ func BackgroundCheck() {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			sha, date, err := latestCommit(ctx)
+			tag, sha, date, err := fetchLatest(ctx)
 			if err != nil {
 				return
 			}
 			c.LastCheckUnix = time.Now().Unix()
+			c.LatestTag = tag
 			c.LatestSHA = sha
 			c.LatestDate = date
 			saveCache(c)
@@ -332,19 +387,21 @@ func copyFile(src, dst string) error {
 	return os.Rename(tmp, dst)
 }
 
-// ForceCheck runs the GitHub check synchronously and returns the latest SHA+date.
-// Used by `remarkable update` to show before/after, and by `--check-update`.
-func ForceCheck(ctx context.Context) (sha, date string, err error) {
-	sha, date, err = latestCommit(ctx)
+// ForceCheck runs the GitHub check synchronously. Tries releases first,
+// falls back to main-branch commit. Returns (tag, sha, date); tag is empty
+// when no release is published yet.
+func ForceCheck(ctx context.Context) (tag, sha, date string, err error) {
+	tag, sha, date, err = fetchLatest(ctx)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	c := loadCache()
 	c.LastCheckUnix = time.Now().Unix()
+	c.LatestTag = tag
 	c.LatestSHA = sha
 	c.LatestDate = date
 	saveCache(c)
-	return sha, date, nil
+	return tag, sha, date, nil
 }
 
 // CurrentSHA is exported for display in the update command
