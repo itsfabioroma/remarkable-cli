@@ -197,7 +197,7 @@ func findBottomY(rmData []byte) float32 {
 // appendStrokesToPage adds new strokes to an existing .rm file (preserving all existing content)
 func appendStrokesToPage(existingData []byte, newLines []rm.Line) ([]byte, error) {
 	// find parentID and max sequence from existing data
-	parentID := rm.CrdtId{0, 11}
+	parentID := rm.CrdtId{Part1: 0, Part2: 11}
 	maxSeq := uint64(100)
 
 	blocks, _ := rm.ParseBlocks(existingData)
@@ -221,7 +221,7 @@ func appendStrokesToPage(existingData []byte, newLines []rm.Line) ([]byte, error
 	// append new LineItem blocks at the end
 	for i, line := range newLines {
 		seq := maxSeq + uint64(i) + 1
-		itemID := rm.CrdtId{1, seq}
+		itemID := rm.CrdtId{Part1: 1, Part2: seq}
 
 		sub := rm.NewWriter()
 		sub.WriteTag(1, rm.TagID)

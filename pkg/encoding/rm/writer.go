@@ -27,8 +27,8 @@ func (w *Writer) WriteHeader() {
 }
 
 // WriteByte writes a single byte
-func (w *Writer) WriteByte(b byte) {
-	w.buf.WriteByte(b)
+func (w *Writer) WriteByte(b byte) error {
+	return w.buf.WriteByte(b)
 }
 
 // WriteUint8 writes a uint8
