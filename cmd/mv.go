@@ -59,6 +59,9 @@ var mvCmd = &cobra.Command{
 			return err
 		}
 
+		// cloud: rebuild doc + root indexes so the metadata change lands
+		syncCloudDoc(t, doc.ID)
+
 		output(map[string]any{"id": doc.ID, "name": meta.VisibleName, "parent": meta.Parent, "status": "moved"})
 		return nil
 	},

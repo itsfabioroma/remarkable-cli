@@ -58,15 +58,17 @@ var getCmd = &cobra.Command{
 		defer rc.Close()
 
 		outPath := doc.Name + ext
+		// create local destination → wrap in CLIError envelope
 		f, err := os.Create(outPath)
 		if err != nil {
-			return err
+			return model.NewCLIError(model.ErrIO, "", fmt.Sprintf("cannot create %s: %v", outPath, err))
 		}
 		defer f.Close()
 
+		// copy bytes → wrap copy errors
 		n, err := io.Copy(f, rc)
 		if err != nil {
-			return err
+			return model.NewCLIError(model.ErrIO, "", fmt.Sprintf("write failed: %v", err))
 		}
 
 		output(map[string]any{"id": doc.ID, "name": doc.Name, "path": outPath, "size": n})

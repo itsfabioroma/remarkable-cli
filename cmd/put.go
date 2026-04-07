@@ -74,9 +74,14 @@ var putCmd = &cobra.Command{
 		}
 
 		// write the actual file
+		// open local source file → wrap with structured envelope
 		f, err := os.Open(filePath)
 		if err != nil {
-			return err
+			code := model.ErrIO
+			if os.IsNotExist(err) {
+				code = model.ErrNotFound
+			}
+			return model.NewCLIError(code, "", fmt.Sprintf("cannot read %s: %v", filePath, err))
 		}
 		defer f.Close()
 

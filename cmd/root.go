@@ -2,8 +2,12 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"runtime/debug"
+	"strings"
+	"time"
 
 	"github.com/itsfabioroma/remarkable-cli/pkg/model"
 	"github.com/itsfabioroma/remarkable-cli/pkg/transport"
@@ -18,39 +22,105 @@ var (
 	flagKeyPath   string
 )
 
-// version is set at build time or defaults to dev
-var version = "0.1.0"
+// version embeds VCS info from runtime/debug at startup
+var version = computeVersion()
 
-var rootCmd = &cobra.Command{
-	Use:           "remarkable",
-	Short:         "CLI for reMarkable Paper Pro — SSH, Cloud, agent-native JSON",
-	Version:       version,
-	SilenceUsage:  true,
-	SilenceErrors: true,
+// computeVersion derives "v0.x.x (sha, date)" from build info, falls back to dev
+func computeVersion() string {
+	base := "0.1.0"
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return base + " (dev)"
+	}
+	var rev, ts string
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			if len(s.Value) >= 7 {
+				rev = s.Value[:7]
+			} else {
+				rev = s.Value
+			}
+		case "vcs.time":
+			if t, err := time.Parse(time.RFC3339, s.Value); err == nil {
+				ts = t.Format("2006-01-02")
+			}
+		}
+	}
+	if rev == "" {
+		return base + " (dev)"
+	}
+	if ts == "" {
+		return fmt.Sprintf("%s (%s)", base, rev)
+	}
+	return fmt.Sprintf("%s (%s, %s)", base, rev, ts)
 }
 
+var rootCmd = &cobra.Command{
+	Use:                        "remarkable",
+	Short:                      "CLI for reMarkable Paper Pro — SSH, Cloud, agent-native JSON",
+	Version:                    version,
+	SilenceUsage:               true,
+	SilenceErrors:              true,
+	SuggestionsMinimumDistance: 2,
+}
+
+// errorEmitted tracks whether outputError already wrote — prevents double-emit
+// when RunE bodies call outputError before returning the err
+var errorEmitted bool
+
+// Execute is the single funnel: every error becomes a CLIError before exit
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %s\n", err)
-		os.Exit(1)
+	err := rootCmd.Execute()
+	if err == nil {
+		return
 	}
+	cliErr := toCLIError(err)
+	if !errorEmitted {
+		outputError(cliErr)
+	}
+	os.Exit(1)
+}
+
+// toCLIError wraps any error into the structured envelope
+func toCLIError(err error) *model.CLIError {
+	var cliErr *model.CLIError
+	if errors.As(err, &cliErr) {
+		return cliErr
+	}
+	msg := err.Error()
+	// cobra unknown-command / arg errors are plain errors
+	low := strings.ToLower(msg)
+	switch {
+	case strings.HasPrefix(low, "unknown command"):
+		return &model.CLIError{Message: msg, Code: model.ErrUnknownCommand}
+	case strings.Contains(low, "accepts") && strings.Contains(low, "arg"),
+		strings.Contains(low, "requires") && strings.Contains(low, "arg"),
+		strings.HasPrefix(low, "unknown flag"),
+		strings.HasPrefix(low, "invalid argument"),
+		strings.HasPrefix(low, "flag needs"):
+		return &model.CLIError{Message: msg, Code: model.ErrInvalidArgs}
+	}
+	return &model.CLIError{Message: msg, Code: model.ErrIO}
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&flagTransport, "transport", "auto", "transport: ssh, cloud, auto")
+	rootCmd.PersistentFlags().StringVar(&flagTransport, "transport", "cloud", "transport: cloud (default), ssh, auto")
 	rootCmd.PersistentFlags().BoolVar(&flagJSON, "json", false, "JSON output (default for non-TTY)")
 	rootCmd.PersistentFlags().StringVar(&flagHost, "host", "10.11.99.1", "device IP")
 	rootCmd.PersistentFlags().StringVar(&flagPassword, "password", "", "SSH password")
 	rootCmd.PersistentFlags().StringVar(&flagKeyPath, "key", "", "SSH key path")
 }
 
-// getTransport returns the best available transport
-// prefers SSH (faster, full access), falls back to cloud (listing, remote put)
+// getTransport returns the configured transport.
+// Default is cloud (works everywhere, no developer mode). Users who want SSH
+// pass --transport=ssh; --transport=auto keeps the old cloud-first-with-SSH-
+// fallback behavior for setups where cloud is flaky.
 func getTransport() (transport.Transport, error) {
 	cfg := loadConfig()
 
-	// explicit --transport flag overrides everything
-	if rootCmd.PersistentFlags().Changed("transport") {
+	// cloud and ssh are direct; only auto runs the fallback logic
+	if flagTransport != "auto" {
 		return connectExplicit(flagTransport)
 	}
 
@@ -144,7 +214,8 @@ func connectExplicit(name string) (transport.Transport, error) {
 		}
 		return t, nil
 	case "auto":
-		return nil, fmt.Errorf("auto is the default, don't pass --transport auto")
+		// auto is handled upstream by getTransport, never reaches here
+		return nil, fmt.Errorf("internal: auto should not reach connectExplicit")
 	default:
 		return nil, verboseErr(fmt.Sprintf("unknown transport: %s", name),
 			"valid transports: ssh, cloud")
@@ -198,6 +269,7 @@ func output(data any) {
 }
 
 func outputError(err error) {
+	errorEmitted = true
 	if flagJSON || !isTerminal() {
 		if cliErr, ok := err.(*model.CLIError); ok {
 			json.NewEncoder(os.Stderr).Encode(cliErr)

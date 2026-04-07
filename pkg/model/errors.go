@@ -15,6 +15,9 @@ const (
 	ErrUnsupported          ErrCode = "unsupported_operation"
 	ErrCorruptedData        ErrCode = "corrupted_data"
 	ErrConflict             ErrCode = "conflict"
+	ErrIO                   ErrCode = "io_error"
+	ErrInvalidArgs          ErrCode = "invalid_args"
+	ErrUnknownCommand       ErrCode = "unknown_command"
 )
 
 // CLIError is the structured error type returned as JSON to agent consumers

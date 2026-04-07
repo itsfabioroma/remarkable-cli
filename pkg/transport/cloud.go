@@ -10,9 +10,12 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,18 +31,40 @@ const (
 	filesURL = syncHost + "/sync/v3/files"
 )
 
+// global concurrency cap shared across all CloudTransport instances
+var httpSem = make(chan struct{}, 4)
+
+// schema constants for sync v3 index blobs
+const (
+	schemaV3 = "3"
+	schemaV4 = "4"
+)
+
+// indexEntry is one parsed line from a root or doc index blob
+type indexEntry struct {
+	hash     string
+	docID    string // for root entries: docID; for doc-index entries: filename
+	subfiles int    // number of files in the doc (root entries) or 0 (file entries)
+	size     int64
+}
+
+// rootState is the parsed snapshot of the cloud root for one sync session
+type rootState struct {
+	schema     string       // "3" or "4"
+	rootHash   string       // sha256 of the root index blob (mutable, advances per write)
+	generation int64        // server generation counter
+	entries    []indexEntry // child entries (one per doc/folder)
+}
+
 // CloudTransport implements document access via sync v3
 type CloudTransport struct {
 	tokens *auth.Tokens
 	store  *auth.TokenStore
 	client *http.Client
 
-	// cached root state
-	rootIndex      map[string]string // docID -> entry hash
-	rootIndexMu    sync.Mutex
-	rootHash       string
-	rootGeneration int64
-	rootRawLines   []string
+	// cached root state (one parsed snapshot, refreshed on demand)
+	root   *rootState
+	rootMu sync.Mutex
 
 	// cached doc list (avoids 429 rate limits on repeated ls)
 	docCache   []model.Document
@@ -49,7 +74,7 @@ type CloudTransport struct {
 func NewCloudTransport() *CloudTransport {
 	return &CloudTransport{
 		store:  auth.NewTokenStore(),
-		client: &http.Client{Timeout: 30 * time.Second},
+		client: &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
@@ -67,9 +92,9 @@ func (t *CloudTransport) Connect() error {
 
 // --- read operations ---
 
-// ListDocuments fetches docs — uses cached metadata to avoid 429 rate limits
-// First call fetches metadata for all docs (parallel, max 10 concurrent)
-// Subsequent calls return cached results (cache lives for the transport's lifetime)
+// ListDocuments fetches docs — caches metadata so repeat calls are free.
+// First call fetches root + per-doc index/metadata blobs (each cached on disk
+// by content hash, so subsequent runs only re-fetch the mutable root).
 func (t *CloudTransport) ListDocuments() ([]model.Document, error) {
 	// return in-memory cache if available
 	t.docCacheMu.Lock()
@@ -88,65 +113,46 @@ func (t *CloudTransport) ListDocuments() ([]model.Document, error) {
 		return docs, nil
 	}
 
-	entries, err := t.getRootEntries()
+	rs, err := t.loadRootState()
 	if err != nil {
 		return nil, err
 	}
+	entries := rs.entries
 
-	// two-phase: first get all doc IDs (2 API calls), then fetch metadata
-	// in small batches with delays to avoid 429 rate limits
-
+	// fetch metadata in parallel — global httpSem caps in-flight requests
 	docs := make([]model.Document, len(entries))
-	for i, e := range entries {
-		docs[i] = model.Document{ID: e.docID, Name: e.docID}
-	}
-
-	// fetch metadata in small batches (3 concurrent, 100ms delay between batches)
-	var (
-		mu  sync.Mutex
-		wg  sync.WaitGroup
-		sem = make(chan struct{}, 3)
-	)
+	errs := make([]error, len(entries))
+	var wg sync.WaitGroup
 
 	for i, e := range entries {
 		wg.Add(1)
-		sem <- struct{}{}
 		go func(idx int, hash, docID string) {
 			defer wg.Done()
-			defer func() { <-sem }()
-
 			meta, err := t.fetchDocMeta(hash, docID)
 			if err != nil {
+				errs[idx] = err
 				return
 			}
-
-			mu.Lock()
 			docs[idx] = *meta
-			mu.Unlock()
 		}(i, e.hash, e.docID)
-
-		// pace requests: pause every 20 docs
-		if i > 0 && i%20 == 0 {
-			time.Sleep(200 * time.Millisecond)
-		}
 	}
 	wg.Wait()
 
-	// remove docs that failed metadata fetch (still have ID as name)
-	var filtered []model.Document
-	for _, d := range docs {
-		if d.Name != d.ID {
-			filtered = append(filtered, d)
+	// fail loudly on any per-doc error — partial lists mislead agents
+	for i, err := range errs {
+		if err != nil {
+			return nil, model.NewCLIError(model.ErrTransportUnavailable, "cloud",
+				fmt.Sprintf("fetch metadata for %s: %v", entries[i].docID, err))
 		}
 	}
 
 	// cache in memory + disk
 	t.docCacheMu.Lock()
-	t.docCache = filtered
+	t.docCache = docs
 	t.docCacheMu.Unlock()
-	saveDiskCache(filtered)
+	saveDiskCache(docs)
 
-	return filtered, nil
+	return docs, nil
 }
 
 // ReadFile downloads a file from the cloud blob tree
@@ -156,7 +162,7 @@ func (t *CloudTransport) ReadFile(docID, path string) (io.ReadCloser, error) {
 		return nil, err
 	}
 
-	docIndex, err := t.authGet(filesURL + "/" + entryHash)
+	docIndex, err := t.fetchBlob(entryHash)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +174,7 @@ func (t *CloudTransport) ReadFile(docID, path string) (io.ReadCloser, error) {
 			fmt.Sprintf("file %q not found in doc %s", path, docID))
 	}
 
-	data, err := t.authGet(filesURL + "/" + fileHash)
+	data, err := t.fetchBlob(fileHash)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +189,7 @@ func (t *CloudTransport) GetMetadata(docID string) (*model.Metadata, error) {
 		return nil, err
 	}
 
-	docIndex, err := t.authGet(filesURL + "/" + entryHash)
+	docIndex, err := t.fetchBlob(entryHash)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +200,7 @@ func (t *CloudTransport) GetMetadata(docID string) (*model.Metadata, error) {
 			fmt.Sprintf("metadata not found for %s", docID))
 	}
 
-	metaBody, err := t.authGet(filesURL + "/" + metaHash)
+	metaBody, err := t.fetchBlob(metaHash)
 	if err != nil {
 		return nil, err
 	}
@@ -249,88 +255,225 @@ func (t *CloudTransport) SetMetadata(docID string, m *model.Metadata) error {
 	return nil
 }
 
-// SyncDoc builds the doc index, uploads it, and updates the root index
-// call after all WriteFile/SetMetadata calls for a document
+// SyncDoc builds the doc index, uploads it, and updates the root index.
+// Retries once on 412 (generation race) by re-fetching root and rebuilding.
 func (t *CloudTransport) SyncDoc(docID string) error {
-	// ensure we have the current root state
-	if t.rootHash == "" {
-		if _, err := t.getRootEntries(); err != nil {
+	for attempt := 0; attempt < 2; attempt++ {
+		// ensure we have current root state (force refresh on retry)
+		var rs *rootState
+		var err error
+		if attempt == 0 {
+			rs, err = t.rootSnapshot()
+		} else {
+			rs, err = t.loadRootState()
+		}
+		if err != nil {
 			return err
 		}
+
+		// 1. build the doc index: start from the current on-server index
+		// (if this doc already exists) so partial updates (mv, tag, re-put
+		// of one file) don't clobber the other files. Then overlay the
+		// blobs tracked in this session.
+		var baseEntries []indexEntry
+		for _, e := range rs.entries {
+			if e.docID == docID {
+				body, err := t.fetchBlob(e.hash)
+				if err != nil {
+					return err
+				}
+				_, existing, err := parseIndex(body)
+				if err != nil {
+					return err
+				}
+				baseEntries = existing
+				break
+			}
+		}
+		fileEntries := mergeEntries(baseEntries, t.docIndexEntries(docID))
+		docIndexBody := serializeIndex(rs.schema, docID, fileEntries, false)
+		docIndexHash, err := hashIndex(rs.schema, fileEntries, docIndexBody)
+		if err != nil {
+			return err
+		}
+
+		// 2. upload the doc index blob
+		if err := t.authPut(filesURL+"/"+docIndexHash, docIndexBody, docID+".docSchema"); err != nil {
+			return err
+		}
+
+		// 3. compute aggregate size for the root entry
+		var totalSize int64
+		for _, fe := range fileEntries {
+			totalSize += fe.size
+		}
+
+		// 4. build new root entries (replace or append this doc)
+		newRootEntries := replaceOrAppend(rs.entries, indexEntry{
+			hash:     docIndexHash,
+			docID:    docID,
+			subfiles: len(fileEntries),
+			size:     totalSize,
+		})
+
+		// 5. serialize + hash the new root index, upload it
+		rootIndexBody := serializeIndex(rs.schema, ".", newRootEntries, true)
+		rootIndexHash, err := hashIndex(rs.schema, newRootEntries, rootIndexBody)
+		if err != nil {
+			return err
+		}
+		if err := t.authPut(filesURL+"/"+rootIndexHash, rootIndexBody, "root.docSchema"); err != nil {
+			return err
+		}
+
+		// 6. atomic root pointer update — send current generation; server
+		// increments and returns the new one. On 412 (race), retry.
+		newGen, err := t.updateRoot(rootIndexHash, rs.generation)
+		if err != nil {
+			if attempt == 0 && isPreconditionFailed(err) {
+				fmt.Fprintln(os.Stderr, "cloud: root generation race, retrying...")
+				continue
+			}
+			return err
+		}
+
+		// 7. update cached root state and invalidate doc list cache
+		t.rootMu.Lock()
+		t.root = &rootState{
+			schema:     rs.schema,
+			rootHash:   rootIndexHash,
+			generation: newGen,
+			entries:    newRootEntries,
+		}
+		t.rootMu.Unlock()
+		t.invalidateDocCache()
+		return nil
 	}
+	return nil
+}
 
-	// build doc index from tracked files
-	docIndexBody := t.buildDocIndex(docID)
-	docIndexHash := sha256Hex(docIndexBody)
+// docIndexEntries snapshots the tracked files for a doc as indexEntry values.
+func (t *CloudTransport) docIndexEntries(docID string) []indexEntry {
+	trackedFilesMu.Lock()
+	files := trackedFiles[docID]
+	trackedFilesMu.Unlock()
 
-	// upload doc index blob (delay to avoid 429)
-	time.Sleep(1 * time.Second)
-	if err := t.authPut(filesURL+"/"+docIndexHash, docIndexBody, docID); err != nil {
-		return err
+	entries := make([]indexEntry, 0, len(files))
+	for _, f := range files {
+		entries = append(entries, indexEntry{
+			hash:  f.hash,
+			docID: f.filename,
+			size:  int64(f.size),
+		})
 	}
+	return entries
+}
 
-	// build new root index: replace or add this doc's entry
-	fileCount := t.trackedFileCount(docID)
-	totalSize := t.trackedTotalSize(docID)
-	newEntry := fmt.Sprintf("%s:80000000:%s:%d:%d", docIndexHash, docID, fileCount, totalSize)
+// mergeEntries overlays updated file entries onto a base list, matching by
+// filename (the docID field for file entries). Updates replace, new entries
+// are appended. Used to apply partial doc-level changes (rename, tag) without
+// losing the content/pdf/metadata blobs already on the server.
+func mergeEntries(base, updates []indexEntry) []indexEntry {
+	if len(base) == 0 {
+		return updates
+	}
+	byName := make(map[string]int, len(base))
+	out := make([]indexEntry, len(base))
+	for i, e := range base {
+		out[i] = e
+		byName[e.docID] = i
+	}
+	for _, u := range updates {
+		if idx, ok := byName[u.docID]; ok {
+			out[idx] = u
+		} else {
+			out = append(out, u)
+			byName[u.docID] = len(out) - 1
+		}
+	}
+	return out
+}
 
-	var newRootLines []string
+// replaceOrAppend returns a new slice with the entry for docID replaced (or appended).
+func replaceOrAppend(entries []indexEntry, e indexEntry) []indexEntry {
+	out := make([]indexEntry, 0, len(entries)+1)
 	replaced := false
-	for _, line := range t.rootRawLines {
-		parts := strings.Split(line, ":")
-		if len(parts) >= 3 && parts[2] == docID {
-			newRootLines = append(newRootLines, newEntry)
+	for _, x := range entries {
+		if x.docID == e.docID {
+			out = append(out, e)
 			replaced = true
 		} else {
-			newRootLines = append(newRootLines, line)
+			out = append(out, x)
 		}
 	}
 	if !replaced {
-		newRootLines = append(newRootLines, newEntry)
+		out = append(out, e)
 	}
-
-	// upload new root index blob
-	rootIndexBody := []byte(strings.Join(newRootLines, "\n"))
-	rootIndexHash := sha256Hex(rootIndexBody)
-
-	time.Sleep(1 * time.Second)
-	if err := t.authPut(filesURL+"/"+rootIndexHash, rootIndexBody, "root"); err != nil {
-		return err
-	}
-
-	// atomic root update
-	time.Sleep(1 * time.Second)
-	return t.updateRoot(rootIndexHash, t.rootGeneration+1)
+	return out
 }
 
-// DeleteDocument removes a doc from the root index
+// DeleteDocument removes a doc from the root index.
+// Note: this is a hard delete (removes from root entirely). The CLI's `rm`
+// command may want to do a soft delete by moving to trash via SetMetadata
+// instead — that's a caller decision.
 func (t *CloudTransport) DeleteDocument(docID string) error {
-	// ensure we have current root state
-	if t.rootHash == "" {
-		if _, err := t.getRootEntries(); err != nil {
+	for attempt := 0; attempt < 2; attempt++ {
+		var rs *rootState
+		var err error
+		if attempt == 0 {
+			rs, err = t.rootSnapshot()
+		} else {
+			rs, err = t.loadRootState()
+		}
+		if err != nil {
 			return err
 		}
-	}
 
-	// rebuild root index without this doc
-	var newRootLines []string
-	for _, line := range t.rootRawLines {
-		parts := strings.Split(line, ":")
-		if len(parts) >= 3 && parts[2] == docID {
-			continue // skip this doc
+		// drop the entry for this doc
+		newEntries := make([]indexEntry, 0, len(rs.entries))
+		found := false
+		for _, e := range rs.entries {
+			if e.docID == docID {
+				found = true
+				continue
+			}
+			newEntries = append(newEntries, e)
 		}
-		newRootLines = append(newRootLines, line)
+		if !found {
+			return model.NewCLIError(model.ErrNotFound, "cloud",
+				fmt.Sprintf("document %s not found in cloud", docID))
+		}
+
+		rootIndexBody := serializeIndex(rs.schema, ".", newEntries, true)
+		rootIndexHash, err := hashIndex(rs.schema, newEntries, rootIndexBody)
+		if err != nil {
+			return err
+		}
+		if err := t.authPut(filesURL+"/"+rootIndexHash, rootIndexBody, "root.docSchema"); err != nil {
+			return err
+		}
+
+		newGen, err := t.updateRoot(rootIndexHash, rs.generation)
+		if err != nil {
+			if attempt == 0 && isPreconditionFailed(err) {
+				fmt.Fprintln(os.Stderr, "cloud: root generation race, retrying...")
+				continue
+			}
+			return err
+		}
+
+		t.rootMu.Lock()
+		t.root = &rootState{
+			schema:     rs.schema,
+			rootHash:   rootIndexHash,
+			generation: newGen,
+			entries:    newEntries,
+		}
+		t.rootMu.Unlock()
+		t.invalidateDocCache()
+		return nil
 	}
-
-	rootIndexBody := []byte(strings.Join(newRootLines, "\n"))
-	rootIndexHash := sha256Hex(rootIndexBody)
-
-	// upload new root index
-	if err := t.authPut(filesURL+"/"+rootIndexHash, rootIndexBody, "root"); err != nil {
-		return err
-	}
-
-	return t.updateRoot(rootIndexHash, t.rootGeneration+1)
+	return nil
 }
 
 // --- tracked files for doc index building ---
@@ -353,42 +496,11 @@ func (t *CloudTransport) trackFile(docID, hash, filename string, size int) {
 	trackedFiles[docID] = append(trackedFiles[docID], trackedFile{hash, filename, size})
 }
 
-func (t *CloudTransport) buildDocIndex(docID string) []byte {
-	trackedFilesMu.Lock()
-	files := trackedFiles[docID]
-	trackedFilesMu.Unlock()
-
-	var lines []string
-	for _, f := range files {
-		lines = append(lines, fmt.Sprintf("%s:0:%s:0:%d", f.hash, f.filename, f.size))
-	}
-	return []byte(strings.Join(lines, "\n"))
-}
-
-func (t *CloudTransport) trackedFileCount(docID string) int {
-	trackedFilesMu.Lock()
-	defer trackedFilesMu.Unlock()
-	return len(trackedFiles[docID])
-}
-
-func (t *CloudTransport) trackedTotalSize(docID string) int {
-	trackedFilesMu.Lock()
-	defer trackedFilesMu.Unlock()
-	total := 0
-	for _, f := range trackedFiles[docID] {
-		total += f.size
-	}
-	return total
-}
-
 // --- internals ---
 
-type rootEntry struct {
-	hash, docID string
-}
-
-// getRootEntries fetches root index and caches hash, generation, raw lines
-func (t *CloudTransport) getRootEntries() ([]rootEntry, error) {
+// loadRootState fetches the root JSON pointer + the root index blob and
+// parses it into a typed snapshot. Always fetches fresh — callers cache.
+func (t *CloudTransport) loadRootState() (*rootState, error) {
 	body, err := t.authGet(rootURL)
 	if err != nil {
 		return nil, err
@@ -398,71 +510,178 @@ func (t *CloudTransport) getRootEntries() ([]rootEntry, error) {
 		Hash       string `json:"hash"`
 		Generation int64  `json:"generation"`
 	}
-	json.Unmarshal(body, &root)
+	if err := json.Unmarshal(body, &root); err != nil {
+		return nil, model.NewCLIError(model.ErrCorruptedData, "cloud",
+			fmt.Sprintf("invalid root pointer: %v", err))
+	}
 
-	// save root state for writes
-	t.rootHash = root.Hash
-	t.rootGeneration = root.Generation
-
-	// get root index blob
-	indexBody, err := t.authGet(filesURL + "/" + root.Hash)
+	// root index blob is content-addressed → safe to fetch via blob cache
+	indexBody, err := t.fetchBlob(root.Hash)
 	if err != nil {
 		return nil, err
 	}
 
-	var entries []rootEntry
-	index := make(map[string]string)
-	var rawLines []string
+	schema, entries, err := parseIndex(indexBody)
+	if err != nil {
+		return nil, err
+	}
 
-	for _, line := range strings.Split(string(indexBody), "\n") {
+	rs := &rootState{
+		schema:     schema,
+		rootHash:   root.Hash,
+		generation: root.Generation,
+		entries:    entries,
+	}
+
+	t.rootMu.Lock()
+	t.root = rs
+	t.rootMu.Unlock()
+
+	return rs, nil
+}
+
+// rootSnapshot returns the cached root state, loading it on first access.
+func (t *CloudTransport) rootSnapshot() (*rootState, error) {
+	t.rootMu.Lock()
+	rs := t.root
+	t.rootMu.Unlock()
+	if rs != nil {
+		return rs, nil
+	}
+	return t.loadRootState()
+}
+
+// getDocEntryHash returns the doc-index hash for a given docID from the cached root.
+func (t *CloudTransport) getDocEntryHash(docID string) (string, error) {
+	rs, err := t.rootSnapshot()
+	if err != nil {
+		return "", err
+	}
+	for _, e := range rs.entries {
+		if e.docID == docID {
+			return e.hash, nil
+		}
+	}
+	// retry with a fresh fetch in case our snapshot is stale
+	rs, err = t.loadRootState()
+	if err != nil {
+		return "", err
+	}
+	for _, e := range rs.entries {
+		if e.docID == docID {
+			return e.hash, nil
+		}
+	}
+	return "", model.NewCLIError(model.ErrNotFound, "cloud",
+		fmt.Sprintf("document %s not found in cloud", docID))
+}
+
+// parseIndex parses a root or doc index blob into entries.
+// Format: first line is schema version ("3" or "4"). For v4, the second line
+// is a totals row ("0:.:<count>:<totalSize>") which we skip. Each entry line
+// is "<hash>:<type>:<id>:<subfiles>:<size>".
+func parseIndex(body []byte) (schema string, entries []indexEntry, err error) {
+	lines := strings.Split(strings.TrimRight(string(body), "\n"), "\n")
+	if len(lines) == 0 || lines[0] == "" {
+		return schemaV4, nil, nil // treat empty as fresh v4
+	}
+
+	schema = strings.TrimSpace(lines[0])
+	if schema != schemaV3 && schema != schemaV4 {
+		return "", nil, model.NewCLIError(model.ErrCorruptedData, "cloud",
+			fmt.Sprintf("unknown index schema %q", schema))
+	}
+
+	rest := lines[1:]
+	// v4 has a totals row right after the schema line — "0:<label>:N:T"
+	// where label is "." for root or the docID for a doc index. Detected by
+	// 4 colon-separated fields starting with "0".
+	if schema == schemaV4 && len(rest) > 0 {
+		parts := strings.Split(rest[0], ":")
+		if len(parts) == 4 && parts[0] == "0" {
+			rest = rest[1:]
+		}
+	}
+
+	for _, line := range rest {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		rawLines = append(rawLines, line)
 		parts := strings.Split(line, ":")
 		if len(parts) < 5 {
 			continue
 		}
-		hash := parts[0]
-		docID := parts[2]
-		entries = append(entries, rootEntry{hash: hash, docID: docID})
-		index[docID] = hash
+		size, _ := strconv.ParseInt(parts[4], 10, 64)
+		subfiles, _ := strconv.Atoi(parts[3])
+		entries = append(entries, indexEntry{
+			hash:     parts[0],
+			docID:    parts[2],
+			subfiles: subfiles,
+			size:     size,
+		})
 	}
-
-	t.rootIndexMu.Lock()
-	t.rootIndex = index
-	t.rootRawLines = rawLines
-	t.rootIndexMu.Unlock()
-
-	return entries, nil
+	return schema, entries, nil
 }
 
-func (t *CloudTransport) getDocEntryHash(docID string) (string, error) {
-	t.rootIndexMu.Lock()
-	idx := t.rootIndex
-	t.rootIndexMu.Unlock()
+// serializeIndex emits an index blob in the given schema.
+// label is "." for the root index, or the docID for a doc index. An empty
+// label skips the totals row (used only for v3 where no totals row exists).
+// isRoot controls the per-entry type field: v3 root uses "80000000",
+// everything else uses "0".
+func serializeIndex(schema, label string, entries []indexEntry, isRoot bool) []byte {
+	// keep entries sorted by docID — required for v3 hashing and matches rmapi
+	sort.Slice(entries, func(i, j int) bool { return entries[i].docID < entries[j].docID })
 
-	if idx != nil {
-		if hash, ok := idx[docID]; ok {
-			return hash, nil
+	var b strings.Builder
+	b.WriteString(schema)
+	b.WriteByte('\n')
+
+	// v4: emit totals row ("0:<label>:<count>:<totalSize>") for both root
+	// and doc indexes. v3 indexes have no totals row.
+	if schema == schemaV4 && label != "" {
+		var total int64
+		for _, e := range entries {
+			total += e.size
 		}
+		fmt.Fprintf(&b, "0:%s:%d:%d\n", label, len(entries), total)
 	}
 
-	_, err := t.getRootEntries()
-	if err != nil {
-		return "", err
+	// per-entry type field: v3 root uses 80000000, everything else uses 0
+	typeField := "0"
+	if schema == schemaV3 && isRoot {
+		typeField = "80000000"
 	}
 
-	t.rootIndexMu.Lock()
-	hash, ok := t.rootIndex[docID]
-	t.rootIndexMu.Unlock()
-
-	if !ok {
-		return "", model.NewCLIError(model.ErrNotFound, "cloud",
-			fmt.Sprintf("document %s not found in cloud", docID))
+	for _, e := range entries {
+		fmt.Fprintf(&b, "%s:%s:%s:%d:%d\n", e.hash, typeField, e.docID, e.subfiles, e.size)
 	}
+	return []byte(b.String())
+}
 
-	return hash, nil
+// hashIndex computes the hash that goes into the parent (root pointer or
+// parent doc-index entry).
+//   - v3: sha256 over the binary-decoded child hashes, sorted by docID
+//   - v4: sha256 of the serialized blob bytes (the body that gets PUT)
+func hashIndex(schema string, entries []indexEntry, body []byte) (string, error) {
+	if schema == schemaV4 {
+		h := sha256.Sum256(body)
+		return hex.EncodeToString(h[:]), nil
+	}
+	// v3
+	sorted := make([]indexEntry, len(entries))
+	copy(sorted, entries)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].docID < sorted[j].docID })
+
+	hasher := sha256.New()
+	for _, e := range sorted {
+		raw, err := hex.DecodeString(e.hash)
+		if err != nil {
+			return "", model.NewCLIError(model.ErrCorruptedData, "cloud",
+				fmt.Sprintf("bad child hash %q: %v", e.hash, err))
+		}
+		hasher.Write(raw)
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 // resolveCloudPath maps a ReadFile/WriteFile path to the cloud filename
@@ -497,7 +716,7 @@ func findFileHash(indexBody []byte, targetFile string) string {
 }
 
 func (t *CloudTransport) fetchDocMeta(hash, docID string) (*model.Document, error) {
-	body, err := t.authGet(filesURL + "/" + hash)
+	body, err := t.fetchBlob(hash)
 	if err != nil {
 		return nil, err
 	}
@@ -507,9 +726,9 @@ func (t *CloudTransport) fetchDocMeta(hash, docID string) (*model.Document, erro
 		return &model.Document{ID: docID, Name: docID}, nil
 	}
 
-	metaBody, err := t.authGet(filesURL + "/" + metaHash)
+	metaBody, err := t.fetchBlob(metaHash)
 	if err != nil {
-		return &model.Document{ID: docID, Name: docID}, nil
+		return nil, err
 	}
 
 	var meta model.Metadata
@@ -541,93 +760,163 @@ func inferFileType(docIndex []byte, docID string) string {
 
 // --- HTTP helpers ---
 
+// preconditionFailedErr signals a 412 from the root update endpoint
+type preconditionFailedErr struct{ status int }
+
+func (e *preconditionFailedErr) Error() string {
+	return fmt.Sprintf("cloud returned %d (precondition failed)", e.status)
+}
+
+func isPreconditionFailed(err error) bool {
+	_, ok := err.(*preconditionFailedErr)
+	return ok
+}
+
+// do runs an http request through the global semaphore + retry loop.
+// Retries on 429 (honoring Retry-After), 502/503/504, and transient net errors.
+// Returns response body, status, and error. 412 surfaces as preconditionFailedErr.
+func (t *CloudTransport) do(reqFn func() (*http.Request, error)) ([]byte, int, error) {
+	const maxAttempts = 5
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		req, err := reqFn()
+		if err != nil {
+			return nil, 0, err
+		}
+
+		// global concurrency cap
+		httpSem <- struct{}{}
+		resp, err := t.client.Do(req)
+		<-httpSem
+
+		// transient network error: backoff and retry
+		if err != nil {
+			if attempt == maxAttempts-1 {
+				return nil, 0, model.NewCLIError(model.ErrTransportUnavailable, "cloud",
+					fmt.Sprintf("cannot reach cloud: %v", err))
+			}
+			time.Sleep(backoffDelay(attempt, ""))
+			continue
+		}
+
+		// 429 / transient 5xx: honor Retry-After then retry
+		if resp.StatusCode == 429 || resp.StatusCode == 502 || resp.StatusCode == 503 || resp.StatusCode == 504 {
+			ra := resp.Header.Get("Retry-After")
+			resp.Body.Close()
+			if attempt == maxAttempts-1 {
+				return nil, resp.StatusCode, model.NewCLIError(model.ErrTransportUnavailable, "cloud",
+					fmt.Sprintf("cloud rate limited (HTTP %d) after %d retries", resp.StatusCode, maxAttempts))
+			}
+			time.Sleep(backoffDelay(attempt, ra))
+			continue
+		}
+
+		// 412: precondition failed (root generation race)
+		if resp.StatusCode == http.StatusPreconditionFailed {
+			resp.Body.Close()
+			return nil, resp.StatusCode, &preconditionFailedErr{status: resp.StatusCode}
+		}
+
+		// success path: 200/201/202
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusCreated {
+			return nil, resp.StatusCode, model.NewCLIError(model.ErrTransportUnavailable, "cloud",
+				fmt.Sprintf("cloud %s %s returned %d: %s", req.Method, req.URL.Path, resp.StatusCode, string(body)))
+		}
+
+		return body, resp.StatusCode, nil
+	}
+
+	return nil, 0, model.NewCLIError(model.ErrTransportUnavailable, "cloud", "cloud request failed")
+}
+
+// backoffDelay returns the delay for a given attempt, honoring Retry-After if present
+func backoffDelay(attempt int, retryAfter string) time.Duration {
+	// honor Retry-After: seconds-int or HTTP-date
+	if retryAfter != "" {
+		if secs, err := strconv.Atoi(retryAfter); err == nil {
+			return time.Duration(secs) * time.Second
+		}
+		if when, err := http.ParseTime(retryAfter); err == nil {
+			d := time.Until(when)
+			if d > 0 {
+				return d
+			}
+		}
+	}
+	// exponential backoff with jitter: 1s, 2s, 4s, 8s, 16s + 0-500ms
+	base := time.Duration(1<<attempt) * time.Second
+	jitter := time.Duration(rand.Intn(500)) * time.Millisecond
+	return base + jitter
+}
+
 func (t *CloudTransport) authGet(url string) ([]byte, error) {
-	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Set("Authorization", "Bearer "+t.tokens.UserToken)
-
-	resp, err := t.client.Do(req)
-	if err != nil {
-		return nil, model.NewCLIError(model.ErrTransportUnavailable, "cloud",
-			fmt.Sprintf("cannot reach cloud: %v", err))
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, model.NewCLIError(model.ErrTransportUnavailable, "cloud",
-			fmt.Sprintf("cloud returned %d", resp.StatusCode))
-	}
-
-	return io.ReadAll(resp.Body)
+	body, _, err := t.do(func() (*http.Request, error) {
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+t.tokens.UserToken)
+		return req, nil
+	})
+	return body, err
 }
 
 // authPut uploads a blob with rm-filename and rm-filesize headers
 func (t *CloudTransport) authPut(url string, data []byte, rmFilename string) error {
-	// retry up to 3 times on 429
-	for attempt := 0; attempt < 3; attempt++ {
-		req, _ := http.NewRequest("PUT", url, bytes.NewReader(data))
+	_, _, err := t.do(func() (*http.Request, error) {
+		req, err := http.NewRequest("PUT", url, bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
 		req.Header.Set("Authorization", "Bearer "+t.tokens.UserToken)
 		req.ContentLength = int64(len(data))
-		req.Header.Set("rm-filename", rmFilename)
-		req.Header.Set("rm-filesize", fmt.Sprintf("%d", len(data)))
-		req.Header.Set("x-goog-hash", "crc32c="+crc32cBase64(data))
-
-		resp, err := t.client.Do(req)
-		if err != nil {
-			return model.NewCLIError(model.ErrTransportUnavailable, "cloud",
-				fmt.Sprintf("cloud PUT failed: %v", err))
-		}
-
-		if resp.StatusCode == 429 {
-			resp.Body.Close()
-			wait := time.Duration(3*(attempt+1)) * time.Second
-			time.Sleep(wait)
-			continue
-		}
-
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-			body, _ := io.ReadAll(resp.Body)
-			return model.NewCLIError(model.ErrTransportUnavailable, "cloud",
-				fmt.Sprintf("cloud PUT returned %d: %s", resp.StatusCode, string(body)))
-		}
-
-		return nil
-	}
-
-	return model.NewCLIError(model.ErrTransportUnavailable, "cloud",
-		"cloud PUT rate limited after 3 retries. Wait a minute and try again.")
+		// bypass Header.Set canonicalization — server requires lowercase keys
+		req.Header["rm-filename"] = []string{rmFilename}
+		req.Header["rm-filesize"] = []string{fmt.Sprintf("%d", len(data))}
+		req.Header["x-goog-hash"] = []string{"crc32c=" + crc32cBase64(data)}
+		return req, nil
+	})
+	return err
 }
 
-// updateRoot atomically updates the root hash with generation check
-func (t *CloudTransport) updateRoot(newHash string, generation int64) error {
-	body, _ := json.Marshal(map[string]any{
+// updateRoot atomically advances the root pointer. The caller passes the
+// CURRENT generation (what was last read); the server compares it to the
+// stored generation and, on match, increments it and returns the new value.
+// A 412 precondition-failed means our view is stale and the caller must
+// re-read and retry. Returns the new generation on success.
+func (t *CloudTransport) updateRoot(newHash string, currentGeneration int64) (int64, error) {
+	reqBody, _ := json.Marshal(map[string]any{
+		"broadcast":  true,
 		"hash":       newHash,
-		"generation": generation,
+		"generation": currentGeneration,
 	})
 
-	req, _ := http.NewRequest("PUT", rootURL, bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+t.tokens.UserToken)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := t.client.Do(req)
+	respBody, _, err := t.do(func() (*http.Request, error) {
+		req, err := http.NewRequest("PUT", rootURL, bytes.NewReader(reqBody))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+t.tokens.UserToken)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header["rm-filename"] = []string{"roothash"}
+		return req, nil
+	})
 	if err != nil {
-		return model.NewCLIError(model.ErrTransportUnavailable, "cloud",
-			fmt.Sprintf("root update failed: %v", err))
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return model.NewCLIError(model.ErrTransportUnavailable, "cloud",
-			fmt.Sprintf("root update returned %d: %s", resp.StatusCode, string(respBody)))
+		return 0, err
 	}
 
-	// update cached state
-	t.rootHash = newHash
-	t.rootGeneration = generation
-
-	return nil
+	var resp struct {
+		Hash       string `json:"hash"`
+		Generation int64  `json:"generation"`
+	}
+	if err := json.Unmarshal(respBody, &resp); err != nil || resp.Generation == 0 {
+		// server may return bare text or a different shape; fall back to +1
+		return currentGeneration + 1, nil
+	}
+	return resp.Generation, nil
 }
 
 func sha256Hex(data []byte) string {
@@ -642,6 +931,40 @@ func crc32cBase64(data []byte) string {
 	b := make([]byte, 4)
 	binary.BigEndian.PutUint32(b, c)
 	return base64.StdEncoding.EncodeToString(b)
+}
+
+// --- persistent content-addressed blob cache ---
+
+// blobs are immutable (filename = sha256 of content), so we can cache forever
+func blobCachePath(hash string) string {
+	home, _ := os.UserHomeDir()
+	if len(hash) < 2 {
+		return ""
+	}
+	return filepath.Join(home, ".config", "remarkable-cli", "blobs", hash[:2], hash)
+}
+
+// fetchBlob returns a blob by hash, hitting the disk cache first
+func (t *CloudTransport) fetchBlob(hash string) ([]byte, error) {
+	path := blobCachePath(hash)
+	if path != "" {
+		if data, err := os.ReadFile(path); err == nil {
+			return data, nil
+		}
+	}
+
+	data, err := t.authGet(filesURL + "/" + hash)
+	if err != nil {
+		return nil, err
+	}
+
+	// best-effort write to disk cache
+	if path != "" {
+		os.MkdirAll(filepath.Dir(path), 0700)
+		os.WriteFile(path, data, 0600)
+	}
+
+	return data, nil
 }
 
 // --- disk cache for cloud doc listing ---
@@ -679,4 +1002,12 @@ func saveDiskCache(docs []model.Document) {
 	data, _ := json.Marshal(cache)
 	os.MkdirAll(filepath.Dir(diskCachePath()), 0700)
 	os.WriteFile(diskCachePath(), data, 0600)
+}
+
+// invalidateDocCache clears in-memory + disk doc list cache after writes
+func (t *CloudTransport) invalidateDocCache() {
+	t.docCacheMu.Lock()
+	t.docCache = nil
+	t.docCacheMu.Unlock()
+	os.Remove(diskCachePath())
 }

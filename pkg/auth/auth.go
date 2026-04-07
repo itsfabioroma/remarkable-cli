@@ -28,10 +28,16 @@ type TokenStore struct {
 
 // Tokens holds the authentication tokens
 type Tokens struct {
-	DeviceToken string `json:"deviceToken"`
-	UserToken   string `json:"userToken"`
-	DeviceID    string `json:"deviceId"`
+	DeviceToken    string `json:"deviceToken"`
+	UserToken      string `json:"userToken"`
+	DeviceID       string `json:"deviceId"`
+	UserTokenAt    int64  `json:"userTokenAt,omitempty"` // unix seconds when UserToken was last refreshed
 }
+
+// userTokenTTL is how long we trust a cached user token before re-refreshing.
+// reMarkable's auth server rate-limits /token/json/2/user/new, so frequent
+// refreshes (e.g. parallel CLI invocations) get throttled.
+const userTokenTTL = 50 * time.Minute
 
 // NewTokenStore creates a store at ~/.config/remarkable-cli/
 func NewTokenStore() *TokenStore {
@@ -133,6 +139,7 @@ func refreshUserToken(tokens *Tokens) error {
 
 	tokenBytes, _ := io.ReadAll(resp.Body)
 	tokens.UserToken = string(tokenBytes)
+	tokens.UserTokenAt = time.Now().Unix()
 	return nil
 }
 
@@ -142,7 +149,15 @@ func EnsureAuth(store *TokenStore) (*Tokens, error) {
 	// try loading existing tokens
 	tokens, err := store.Load()
 	if err == nil && tokens.DeviceToken != "" {
-		// try refreshing user token
+		// reuse cached user token if still fresh — avoids hammering the
+		// auth server (which rate-limits) on every CLI invocation
+		if tokens.UserToken != "" && tokens.UserTokenAt > 0 {
+			age := time.Since(time.Unix(tokens.UserTokenAt, 0))
+			if age < userTokenTTL {
+				return tokens, nil
+			}
+		}
+		// stale or missing — refresh
 		if err := refreshUserToken(tokens); err == nil {
 			store.Save(tokens)
 			return tokens, nil
