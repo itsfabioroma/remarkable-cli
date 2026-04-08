@@ -15,7 +15,7 @@ var mvCmd = &cobra.Command{
 If the destination is an existing folder, the source is moved there. Otherwise, the source is renamed to the destination string.`,
 	Example: `  remarkable mv "Draft" "Final"
   remarkable mv "Doc" "Folder"`,
-	Args:  cobra.ExactArgs(2),
+	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		t, err := getTransport()
 		if err != nil {

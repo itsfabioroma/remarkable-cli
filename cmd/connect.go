@@ -203,9 +203,9 @@ func setupSSH(cfg *deviceConfig, reader *bufio.Reader, interactive bool, args []
 }
 
 var disconnectCmd = &cobra.Command{
-	Use:   "disconnect",
-	Short: "Forget saved connection",
-	Long: `Remove the saved device configuration at ~/.config/remarkable-cli/device.json.`,
+	Use:     "disconnect",
+	Short:   "Forget saved connection",
+	Long:    `Remove the saved device configuration at ~/.config/remarkable-cli/device.json.`,
 	Example: `  remarkable disconnect`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		os.Remove(configPath())

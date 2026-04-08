@@ -4,18 +4,18 @@ import "time"
 
 // Document represents a file or folder on the reMarkable
 type Document struct {
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	Type           DocType   `json:"type"`
-	Parent         string    `json:"parent"`
-	LastModified   time.Time `json:"lastModified"`
-	Pinned         bool      `json:"pinned,omitempty"`
-	Version        int       `json:"version"`
-	CurrentPage    int       `json:"currentPage,omitempty"`
-	PageCount      int       `json:"pageCount,omitempty"`
-	FileType       string    `json:"fileType,omitempty"` // "pdf", "epub", ""
-	Path           string    `json:"path,omitempty"`     // tree-resolved path (info only)
-	Tags           []string  `json:"tags,omitempty"`     // document tags (info only)
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Type         DocType   `json:"type"`
+	Parent       string    `json:"parent"`
+	LastModified time.Time `json:"lastModified"`
+	Pinned       bool      `json:"pinned,omitempty"`
+	Version      int       `json:"version"`
+	CurrentPage  int       `json:"currentPage,omitempty"`
+	PageCount    int       `json:"pageCount,omitempty"`
+	FileType     string    `json:"fileType,omitempty"` // "pdf", "epub", ""
+	Path         string    `json:"path,omitempty"`     // tree-resolved path (info only)
+	Tags         []string  `json:"tags,omitempty"`     // document tags (info only)
 }
 
 // DocType distinguishes documents from folders

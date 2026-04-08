@@ -21,8 +21,8 @@ import (
 
 // GitHub repo the CLI lives in. Matches the module path in go.mod.
 const (
-	repoOwner = "itsfabioroma"
-	repoName  = "remarkable-cli"
+	repoOwner  = "itsfabioroma"
+	repoName   = "remarkable-cli"
 	modulePath = "github.com/itsfabioroma/remarkable-cli"
 	// how often we poll GitHub (silent background check)
 	checkInterval = 24 * time.Hour

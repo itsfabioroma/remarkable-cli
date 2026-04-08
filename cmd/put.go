@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/itsfabioroma/remarkable-cli/pkg/model"
 	"github.com/google/uuid"
+	"github.com/itsfabioroma/remarkable-cli/pkg/model"
 	"github.com/spf13/cobra"
 )
 
@@ -22,7 +22,7 @@ Requires SSH for fastest path. Cloud transport works as fallback.`,
 	Example: `  remarkable put report.pdf
   remarkable put report.pdf "Work"
   remarkable put book.epub "Reading"`,
-	Args:  cobra.RangeArgs(1, 2),
+	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		filePath := args[0]
 

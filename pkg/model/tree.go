@@ -8,7 +8,7 @@ import (
 
 // Tree builds a virtual folder hierarchy from flat document list
 type Tree struct {
-	docs   map[string]*Document
+	docs     map[string]*Document
 	children map[string][]string // parentID -> childIDs
 }
 

@@ -15,11 +15,11 @@ import (
 var pagesCmd = &cobra.Command{
 	Use:   "pages <notebook>",
 	Short: "List pages in a notebook",
-	Long: `List every page in a notebook, with index, UUID, and template. Subcommands: add, rm, move, copy, move-to.`,
+	Long:  `List every page in a notebook, with index, UUID, and template. Subcommands: add, rm, move, copy, move-to.`,
 	Example: `  remarkable pages "Notebook"
   remarkable pages add "Notebook"
   remarkable pages rm "Notebook" --page 5`,
-	Args:  cobra.ExactArgs(1),
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sshT, err := getSSH()
 		if err != nil {
@@ -56,11 +56,11 @@ var pagesCmd = &cobra.Command{
 var pagesAddCmd = &cobra.Command{
 	Use:   "add <notebook>",
 	Short: "Add a blank page to a notebook",
-	Long: `Add a new blank page to a notebook. Defaults to appending; use --after N to insert after a specific page, --template to pick a page template.`,
+	Long:  `Add a new blank page to a notebook. Defaults to appending; use --after N to insert after a specific page, --template to pick a page template.`,
 	Example: `  remarkable pages add "Notebook"
   remarkable pages add "Notebook" --after 3
   remarkable pages add "Notebook" --template "P Grid medium"`,
-	Args:  cobra.ExactArgs(1),
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sshT, err := getSSH()
 		if err != nil {
@@ -99,11 +99,11 @@ var pagesAddCmd = &cobra.Command{
 }
 
 var pagesRmCmd = &cobra.Command{
-	Use:   "rm <notebook> --page <n>",
-	Short: "Remove a page from a notebook",
-	Long: `Remove a single page (1-indexed) from a notebook and delete its underlying .rm file.`,
+	Use:     "rm <notebook> --page <n>",
+	Short:   "Remove a page from a notebook",
+	Long:    `Remove a single page (1-indexed) from a notebook and delete its underlying .rm file.`,
 	Example: `  remarkable pages rm "Notebook" --page 5`,
-	Args:  cobra.ExactArgs(1),
+	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pageNum, _ := cmd.Flags().GetInt("page")
 		if pageNum < 1 {
@@ -156,11 +156,11 @@ var pagesRmCmd = &cobra.Command{
 }
 
 var pagesMoveCmd = &cobra.Command{
-	Use:   "move <notebook> --page <n> --to <m>",
-	Short: "Move a page to a different position",
-	Long: `Reorder a page within the same notebook. Both --page and --to are 1-indexed.`,
+	Use:     "move <notebook> --page <n> --to <m>",
+	Short:   "Move a page to a different position",
+	Long:    `Reorder a page within the same notebook. Both --page and --to are 1-indexed.`,
 	Example: `  remarkable pages move "Notebook" --page 5 --to 1`,
-	Args:  cobra.ExactArgs(1),
+	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fromPage, _ := cmd.Flags().GetInt("page")
 		toPage, _ := cmd.Flags().GetInt("to")
@@ -202,7 +202,9 @@ var pagesMoveCmd = &cobra.Command{
 
 // --- helpers ---
 
-func findDoc(t interface{ ListDocuments() ([]model.Document, error) }, name string) (*model.Document, error) {
+func findDoc(t interface {
+	ListDocuments() ([]model.Document, error)
+}, name string) (*model.Document, error) {
 	docs, err := t.ListDocuments()
 	if err != nil {
 		return nil, err
@@ -218,7 +220,9 @@ func findDoc(t interface{ ListDocuments() ([]model.Document, error) }, name stri
 	return matches[0], nil
 }
 
-func readContent(sshT interface{ ReadFile(string, string) (io.ReadCloser, error) }, docID string) (*model.Content, []byte, error) {
+func readContent(sshT interface {
+	ReadFile(string, string) (io.ReadCloser, error)
+}, docID string) (*model.Content, []byte, error) {
 	rc, err := sshT.ReadFile(docID, "content")
 	if err != nil {
 		return nil, nil, err
@@ -327,11 +331,11 @@ func reorderPageInContent(sshT sshWriter, docID string, rawContent []byte, fromI
 
 // copy a page from one notebook to another
 var pagesCopyCmd = &cobra.Command{
-	Use:   "copy <notebook> --page <n> --to <destination>",
-	Short: "Copy a page from one notebook to another",
-	Long: `Copy a single page from one notebook into another. The .rm file is duplicated with a fresh UUID and appended to the destination.`,
+	Use:     "copy <notebook> --page <n> --to <destination>",
+	Short:   "Copy a page from one notebook to another",
+	Long:    `Copy a single page from one notebook into another. The .rm file is duplicated with a fresh UUID and appended to the destination.`,
 	Example: `  remarkable pages copy "Source" --page 3 --to "Destination"`,
-	Args:  cobra.ExactArgs(1),
+	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pageNum, _ := cmd.Flags().GetInt("page")
 		destName, _ := cmd.Flags().GetString("to")
@@ -404,11 +408,11 @@ var pagesCopyCmd = &cobra.Command{
 
 // move a page from one notebook to another (copy + delete from source)
 var pagesMoveToCmd = &cobra.Command{
-	Use:   "move-to <notebook> --page <n> --to <destination>",
-	Short: "Move a page to another notebook",
-	Long: `Move a single page from one notebook to another (copy + delete from source).`,
+	Use:     "move-to <notebook> --page <n> --to <destination>",
+	Short:   "Move a page to another notebook",
+	Long:    `Move a single page from one notebook to another (copy + delete from source).`,
 	Example: `  remarkable pages move-to "Source" --page 3 --to "Destination"`,
-	Args:  cobra.ExactArgs(1),
+	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pageNum, _ := cmd.Flags().GetInt("page")
 		destName, _ := cmd.Flags().GetString("to")

@@ -24,7 +24,7 @@ var fetchCmd = &cobra.Command{
 Validates Content-Type is application/pdf. Filename comes from Content-Disposition or URL path.`,
 	Example: `  remarkable fetch https://arxiv.org/pdf/2401.12345.pdf
   remarkable fetch https://example.com/paper.pdf "Research"`,
-	Args:  cobra.RangeArgs(1, 2),
+	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		url := args[0]
 

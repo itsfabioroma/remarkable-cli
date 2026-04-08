@@ -38,9 +38,9 @@ type CPages struct {
 
 // CPage is a single page entry in cPages format
 type CPage struct {
-	ID         string         `json:"id"`
-	Idx        map[string]any `json:"idx,omitempty"`
-	TemplateV  map[string]any `json:"template,omitempty"`
+	ID        string         `json:"id"`
+	Idx       map[string]any `json:"idx,omitempty"`
+	TemplateV map[string]any `json:"template,omitempty"`
 }
 
 // Template returns the template name for this page

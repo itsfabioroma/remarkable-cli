@@ -48,10 +48,18 @@ func (s *SVGRenderer) RenderPage(w io.Writer, blocks []rm.Block) error {
 	maxX, maxY := float32(-1e9), float32(-1e9)
 	for _, line := range lines {
 		for _, pt := range line.Points {
-			if pt.X < minX { minX = pt.X }
-			if pt.Y < minY { minY = pt.Y }
-			if pt.X > maxX { maxX = pt.X }
-			if pt.Y > maxY { maxY = pt.Y }
+			if pt.X < minX {
+				minX = pt.X
+			}
+			if pt.Y < minY {
+				minY = pt.Y
+			}
+			if pt.X > maxX {
+				maxX = pt.X
+			}
+			if pt.Y > maxY {
+				maxY = pt.Y
+			}
 		}
 	}
 

@@ -22,7 +22,7 @@ Returns JSON by default when called by an agent. Use --all to include trashed do
 	Example: `  remarkable ls
   remarkable ls --all
   remarkable ls --tag work`,
-	Args:  cobra.MaximumNArgs(1),
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		t, err := getTransport()
 		if err != nil {

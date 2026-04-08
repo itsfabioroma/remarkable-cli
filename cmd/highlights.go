@@ -115,7 +115,9 @@ Reads .highlights/*.json files written by reMarkable when you highlight in PDFs/
 }
 
 // readHighlights tries known path patterns for highlight JSON
-func readHighlights(t interface{ ReadFile(string, string) (io.ReadCloser, error) }, docID, pageID string) []highlightEntry {
+func readHighlights(t interface {
+	ReadFile(string, string) (io.ReadCloser, error)
+}, docID, pageID string) []highlightEntry {
 	// try both known path patterns
 	paths := []string{
 		pageID + ".highlights/" + pageID + ".json",

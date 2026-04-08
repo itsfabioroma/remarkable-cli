@@ -17,7 +17,7 @@ var getCmd = &cobra.Command{
 Resolves the document by name; errors if ambiguous. Saves with the original extension.`,
 	Example: `  remarkable get "My Notes"
   remarkable get "Research Paper"`,
-	Args:  cobra.ExactArgs(1),
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		t, err := getTransport()
 		if err != nil {

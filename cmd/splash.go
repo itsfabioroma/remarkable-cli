@@ -42,7 +42,7 @@ var splashNames = map[string]string{
 var splashCmd = &cobra.Command{
 	Use:   "splash",
 	Short: "Manage device splash screens",
-	Long: `Manage the splash screens shown during sleep, power off, boot, etc. Use the subcommands set, list, restore.`,
+	Long:  `Manage the splash screens shown during sleep, power off, boot, etc. Use the subcommands set, list, restore.`,
 	Example: `  remarkable splash list
   remarkable splash set art.png
   remarkable splash restore`,
@@ -134,12 +134,12 @@ Screens: sleep (default), poweroff, starting, battery, reboot.`,
 
 		bounds := resized.Bounds()
 		output(map[string]any{
-			"screen":  screenName,
-			"file":    targetFile,
-			"source":  filepath.Base(imagePath),
-			"width":   bounds.Dx(),
-			"height":  bounds.Dy(),
-			"status":  "replaced",
+			"screen": screenName,
+			"file":   targetFile,
+			"source": filepath.Base(imagePath),
+			"width":  bounds.Dx(),
+			"height": bounds.Dy(),
+			"status": "replaced",
 		})
 
 		if !flagJSON && isTerminal() {
@@ -154,9 +154,9 @@ Screens: sleep (default), poweroff, starting, battery, reboot.`,
 // --- splash list ---
 
 var splashListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List current splash screens on device",
-	Long: `List every splash screen file on the device, whether it exists, and whether a backup of the original is available.`,
+	Use:     "list",
+	Short:   "List current splash screens on device",
+	Long:    `List every splash screen file on the device, whether it exists, and whether a backup of the original is available.`,
 	Example: `  remarkable splash list`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sshT, err := getSSH()
@@ -194,10 +194,10 @@ var splashListCmd = &cobra.Command{
 var splashRestoreCmd = &cobra.Command{
 	Use:   "restore [screen]",
 	Short: "Restore original splash screen from backup",
-	Long: `Restore the original factory splash screen from the backup made when you first ran "splash set".`,
+	Long:  `Restore the original factory splash screen from the backup made when you first ran "splash set".`,
 	Example: `  remarkable splash restore
   remarkable splash restore poweroff`,
-	Args:  cobra.MaximumNArgs(1),
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		screenName := "sleep"
 		if len(args) > 0 {

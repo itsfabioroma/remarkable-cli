@@ -10,7 +10,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-
 var searchCmd = &cobra.Command{
 	Use:   "search <query>",
 	Short: "Search documents by name",

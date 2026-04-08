@@ -18,7 +18,7 @@ var infoCmd = &cobra.Command{
 Returns the same JSON shape as ls for one document, plus a tree-resolved path and tags.`,
 	Example: `  remarkable info "My Notes"
   remarkable --json info "Meeting"`,
-	Args:  cobra.ExactArgs(1),
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		t, err := getTransport()
 		if err != nil {

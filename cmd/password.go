@@ -20,7 +20,7 @@ var passwordCmd = &cobra.Command{
 If no password is given, prompts interactively.`,
 	Example: `  remarkable password newpass
   remarkable password`,
-	Args:  cobra.MaximumNArgs(1),
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sshT, err := getSSH()
 		if err != nil {
@@ -77,9 +77,9 @@ If no password is given, prompts interactively.`,
 }
 
 var setupKeyCmd = &cobra.Command{
-	Use:   "setup-key",
-	Short: "Install SSH public key for passwordless access",
-	Long: `Install your local SSH public key (id_ed25519.pub or id_rsa.pub) into the device's authorized_keys for passwordless login.`,
+	Use:     "setup-key",
+	Short:   "Install SSH public key for passwordless access",
+	Long:    `Install your local SSH public key (id_ed25519.pub or id_rsa.pub) into the device's authorized_keys for passwordless login.`,
 	Example: `  remarkable setup-key`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sshT, err := getSSH()

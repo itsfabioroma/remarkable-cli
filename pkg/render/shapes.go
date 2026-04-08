@@ -35,10 +35,10 @@ func StrokeLine(x1, y1, x2, y2 float32, pen model.PenType, color model.PenColor,
 // StrokeRect creates four lines forming a rectangle
 func StrokeRect(x, y, w, h float32, pen model.PenType, color model.PenColor, thickness float64) []rm.Line {
 	return []rm.Line{
-		StrokeLine(x, y, x+w, y, pen, color, thickness),         // top
-		StrokeLine(x+w, y, x+w, y+h, pen, color, thickness),     // right
-		StrokeLine(x+w, y+h, x, y+h, pen, color, thickness),     // bottom
-		StrokeLine(x, y+h, x, y, pen, color, thickness),         // left
+		StrokeLine(x, y, x+w, y, pen, color, thickness),     // top
+		StrokeLine(x+w, y, x+w, y+h, pen, color, thickness), // right
+		StrokeLine(x+w, y+h, x, y+h, pen, color, thickness), // bottom
+		StrokeLine(x, y+h, x, y, pen, color, thickness),     // left
 	}
 }
 

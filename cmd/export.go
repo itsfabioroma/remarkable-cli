@@ -176,7 +176,6 @@ Uses SSH when available, falls back to cloud automatically. Renders strokes from
 	},
 }
 
-
 func init() {
 	exportCmd.Flags().StringVarP(&exportOutput, "output", "o", "", "output directory")
 	exportCmd.Flags().IntVar(&exportPage, "page", 0, "export single page (1-indexed)")

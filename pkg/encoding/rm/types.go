@@ -37,18 +37,18 @@ const (
 type BlockType uint8
 
 const (
-	BlockMigrationInfo    BlockType = 0x00
-	BlockSceneTree        BlockType = 0x01
-	BlockTreeNode         BlockType = 0x02
-	BlockSceneGlyphItem   BlockType = 0x03
-	BlockSceneGroupItem   BlockType = 0x04
-	BlockSceneLineItem    BlockType = 0x05
-	BlockSceneTextItem    BlockType = 0x06
-	BlockRootText         BlockType = 0x07
-	BlockSceneTombstone   BlockType = 0x08
-	BlockAuthorIds        BlockType = 0x09
-	BlockPageInfo         BlockType = 0x0A
-	BlockSceneInfo        BlockType = 0x0D
+	BlockMigrationInfo  BlockType = 0x00
+	BlockSceneTree      BlockType = 0x01
+	BlockTreeNode       BlockType = 0x02
+	BlockSceneGlyphItem BlockType = 0x03
+	BlockSceneGroupItem BlockType = 0x04
+	BlockSceneLineItem  BlockType = 0x05
+	BlockSceneTextItem  BlockType = 0x06
+	BlockRootText       BlockType = 0x07
+	BlockSceneTombstone BlockType = 0x08
+	BlockAuthorIds      BlockType = 0x09
+	BlockPageInfo       BlockType = 0x0A
+	BlockSceneInfo      BlockType = 0x0D
 )
 
 // Point represents a single point in a stroke
@@ -69,8 +69,8 @@ type Line struct {
 	StartingLength float32
 	Points         []Point
 	Timestamp      CrdtId
-	MoveID         CrdtId   // optional, for moved strokes
-	ColorRGBA      uint32   // optional, packed BGRA
+	MoveID         CrdtId // optional, for moved strokes
+	ColorRGBA      uint32 // optional, packed BGRA
 }
 
 // GlyphRange represents a PDF highlight annotation
@@ -100,14 +100,14 @@ type TextItem struct {
 type ParagraphStyle uint8
 
 const (
-	StyleBasic          ParagraphStyle = 0
-	StylePlain          ParagraphStyle = 1
-	StyleHeading        ParagraphStyle = 2
-	StyleBold           ParagraphStyle = 3
-	StyleBullet         ParagraphStyle = 4
-	StyleBullet2        ParagraphStyle = 5
-	StyleCheckbox       ParagraphStyle = 6
-	StyleCheckboxDone   ParagraphStyle = 7
+	StyleBasic        ParagraphStyle = 0
+	StylePlain        ParagraphStyle = 1
+	StyleHeading      ParagraphStyle = 2
+	StyleBold         ParagraphStyle = 3
+	StyleBullet       ParagraphStyle = 4
+	StyleBullet2      ParagraphStyle = 5
+	StyleCheckbox     ParagraphStyle = 6
+	StyleCheckboxDone ParagraphStyle = 7
 )
 
 // SceneNode represents a node in the scene tree (layer/group)
@@ -121,9 +121,9 @@ type SceneNode struct {
 
 // Page holds all parsed content for a single .rm page
 type Page struct {
-	Nodes      []SceneNode
-	Lines      []Line
-	Glyphs     []GlyphRange
-	TextItems  []TextItem
-	AuthorMap  map[uint8]string // author ID -> UUID
+	Nodes     []SceneNode
+	Lines     []Line
+	Glyphs    []GlyphRange
+	TextItems []TextItem
+	AuthorMap map[uint8]string // author ID -> UUID
 }

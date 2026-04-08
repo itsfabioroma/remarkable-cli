@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/itsfabioroma/remarkable-cli/pkg/model"
 	"github.com/google/uuid"
+	"github.com/itsfabioroma/remarkable-cli/pkg/model"
 )
 
 // cloud API endpoints (from community reverse-engineering of rmapi/rmfakecloud)
@@ -28,10 +28,10 @@ type TokenStore struct {
 
 // Tokens holds the authentication tokens
 type Tokens struct {
-	DeviceToken    string `json:"deviceToken"`
-	UserToken      string `json:"userToken"`
-	DeviceID       string `json:"deviceId"`
-	UserTokenAt    int64  `json:"userTokenAt,omitempty"` // unix seconds when UserToken was last refreshed
+	DeviceToken string `json:"deviceToken"`
+	UserToken   string `json:"userToken"`
+	DeviceID    string `json:"deviceId"`
+	UserTokenAt int64  `json:"userTokenAt,omitempty"` // unix seconds when UserToken was last refreshed
 }
 
 // userTokenTTL is how long we trust a cached user token before re-refreshing.

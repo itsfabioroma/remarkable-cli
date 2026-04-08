@@ -24,7 +24,6 @@ import (
 // xochitl data directory on reMarkable devices
 const xochitlPath = "/home/root/.local/share/remarkable/xochitl"
 
-
 // SSHTransport implements DeviceTransport via SSH/SFTP
 type SSHTransport struct {
 	host     string
@@ -265,10 +264,11 @@ func (t *SSHTransport) SetMetadata(docID string, m *model.Metadata) error {
 
 // ReadFile reads a file relative to a document's UUID space
 // relPath examples:
-//   "content"     -> {xochitl}/{uuid}.content (top-level doc file)
-//   "pdf"         -> {xochitl}/{uuid}.pdf
-//   "abc123.rm"   -> {xochitl}/{uuid}/abc123.rm (page file inside UUID dir)
-//   "abc/def.json"-> {xochitl}/{uuid}/abc/def.json
+//
+//	"content"     -> {xochitl}/{uuid}.content (top-level doc file)
+//	"pdf"         -> {xochitl}/{uuid}.pdf
+//	"abc123.rm"   -> {xochitl}/{uuid}/abc123.rm (page file inside UUID dir)
+//	"abc/def.json"-> {xochitl}/{uuid}/abc/def.json
 func (t *SSHTransport) ReadFile(docID, relPath string) (io.ReadCloser, error) {
 	// try as top-level doc file first: {uuid}.{relPath}
 	topLevel := filepath.Join(xochitlPath, docID+"."+relPath)
@@ -448,11 +448,11 @@ func (t *SSHTransport) WatchChanges(ctx context.Context) (<-chan ChangeEvent, er
 
 // Paper Pro screen dimensions
 const (
-	ppScreenW   = 1632
-	ppScreenH   = 2154
-	ppBPP       = 4 // BGRA, 4 bytes per pixel
-	ppFBSize    = ppScreenW * ppScreenH * ppBPP
-	driMapSize  = 1757184 // each /dev/dri/card0 mapping
+	ppScreenW  = 1632
+	ppScreenH  = 2154
+	ppBPP      = 4 // BGRA, 4 bytes per pixel
+	ppFBSize   = ppScreenW * ppScreenH * ppBPP
+	driMapSize = 1757184 // each /dev/dri/card0 mapping
 )
 
 // Screenshot captures the device screen via /proc/PID/mem
@@ -618,4 +618,3 @@ func (t *SSHTransport) removeAll(path string) {
 	}
 	t.sftpClient.RemoveDirectory(path)
 }
-

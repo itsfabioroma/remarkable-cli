@@ -17,7 +17,7 @@ import (
 var tagCmd = &cobra.Command{
 	Use:   "tag <document> <tag>",
 	Short: "Add or remove a tag on a document or page",
-	Long: `Add or remove tags on a document, or on a specific page within a document.`,
+	Long:  `Add or remove tags on a document, or on a specific page within a document.`,
 	Example: `  remarkable tag "Notebook" work
   remarkable tag "Notebook" work --rm
   remarkable tag "Notebook" important --page 3`,
@@ -96,9 +96,9 @@ var tagCmd = &cobra.Command{
 }
 
 var tagsListCmd = &cobra.Command{
-	Use:   "tags",
-	Short: "List all tags across the library",
-	Long: `List every tag in use across the document library, with the documents they appear on. Requires SSH.`,
+	Use:     "tags",
+	Short:   "List all tags across the library",
+	Long:    `List every tag in use across the document library, with the documents they appear on. Requires SSH.`,
 	Example: `  remarkable tags`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		t, err := getTransport()
