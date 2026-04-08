@@ -61,10 +61,10 @@ download_release() {
 
 # sha256 verify via shasum or sha256sum
 verify_checksum() {
-  local expected got line
-  line=$(grep " ${ARCHIVE_NAME}\$\| \*${ARCHIVE_NAME}\$" "$TMPDIR_/checksums.txt" || true)
-  [ -z "$line" ] && error "checksum entry for $ARCHIVE_NAME not found"
-  expected=$(printf '%s' "$line" | awk '{print $1}')
+  local expected got
+  # match "<hash>  <file>" or "<hash> *<file>"; strip optional leading '*' on field 2
+  expected=$(awk -v f="$ARCHIVE_NAME" '{n=$2; sub(/^\*/,"",n); if(n==f){print $1; exit}}' "$TMPDIR_/checksums.txt")
+  [ -z "$expected" ] && error "checksum entry for $ARCHIVE_NAME not found"
   if command -v sha256sum >/dev/null 2>&1; then
     got=$(sha256sum "$ARCHIVE" | awk '{print $1}')
   elif command -v shasum >/dev/null 2>&1; then
