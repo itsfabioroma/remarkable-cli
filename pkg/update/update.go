@@ -1,11 +1,15 @@
 // Package update provides self-update and new-version awareness for the
-// remarkable CLI. It checks GitHub for the latest commit on main, caches
-// the result for a day, notifies the user (non-intrusively) when they're
-// behind, and rebuilds the binary in place on demand.
+// remarkable CLI. It checks GitHub for the latest release (or main commit as
+// fallback), caches the result for a day, notifies the user non-intrusively
+// when they're behind, and replaces the active binary in place on demand.
 package update
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -21,32 +26,27 @@ import (
 
 // GitHub repo the CLI lives in. Matches the module path in go.mod.
 const (
-	repoOwner  = "itsfabioroma"
-	repoName   = "remarkable-cli"
-	modulePath = "github.com/itsfabioroma/remarkable-cli"
-	// how often we poll GitHub (silent background check)
+	repoOwner     = "itsfabioroma"
+	repoName      = "remarkable-cli"
+	modulePath    = "github.com/itsfabioroma/remarkable-cli"
 	checkInterval = 24 * time.Hour
 )
 
-// Cache is what we persist to disk between runs
+// Cache persisted between runs.
 type Cache struct {
 	LastCheckUnix int64  `json:"last_check_unix"`
 	LatestSHA     string `json:"latest_sha"`
 	LatestDate    string `json:"latest_date"`
-	// LatestTag is the semver tag of the latest GitHub Release, if any.
-	// Empty string means we fell back to commits/main (no releases yet).
-	LatestTag string `json:"latest_tag,omitempty"`
-	// ShownForSHA suppresses repeat banners for the same upgrade
-	ShownForSHA string `json:"shown_for_sha,omitempty"`
+	LatestTag     string `json:"latest_tag,omitempty"`
+	ShownForSHA   string `json:"shown_for_sha,omitempty"`
 }
 
-// cachePath is the on-disk location of the update cache
+// cachePath is the on-disk location of the update cache.
 func cachePath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".config", "remarkable-cli", "update-check.json")
 }
 
-// loadCache returns the last cached check (empty struct on miss)
 func loadCache() Cache {
 	var c Cache
 	data, err := os.ReadFile(cachePath())
@@ -57,14 +57,13 @@ func loadCache() Cache {
 	return c
 }
 
-// saveCache writes the cache back to disk (best effort)
 func saveCache(c Cache) {
 	data, _ := json.Marshal(c)
 	_ = os.MkdirAll(filepath.Dir(cachePath()), 0700)
 	_ = os.WriteFile(cachePath(), data, 0600)
 }
 
-// currentSHA returns the vcs.revision embedded at build time, or "" if dev build
+// currentSHA returns the vcs.revision embedded at build time.
 func currentSHA() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -78,7 +77,7 @@ func currentSHA() string {
 	return ""
 }
 
-// currentBuildTime returns the vcs.time embedded at build time, or zero time
+// currentBuildTime returns the vcs.time embedded at build time.
 func currentBuildTime() time.Time {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -94,7 +93,6 @@ func currentBuildTime() time.Time {
 	return time.Time{}
 }
 
-// shortSHA returns the first 7 chars for display
 func shortSHA(sha string) string {
 	if len(sha) >= 7 {
 		return sha[:7]
@@ -102,10 +100,8 @@ func shortSHA(sha string) string {
 	return sha
 }
 
-// latestRelease fetches the latest GitHub Release. Returns the tag name,
-// the commit SHA the release was built from, and the publish date.
-// Returns (empty, empty, empty, nil) when no release exists (404) —
-// callers should then fall back to latestCommit.
+// latestRelease fetches the latest GitHub Release (tag, sha, date).
+// Returns empty strings (not an error) when no release exists.
 func latestRelease(ctx context.Context) (tag, sha, date string, err error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", repoOwner, repoName)
 	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -120,7 +116,7 @@ func latestRelease(ctx context.Context) (tag, sha, date string, err error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 404 {
-		return "", "", "", nil // no releases yet — caller should fall back
+		return "", "", "", nil
 	}
 	if resp.StatusCode != 200 {
 		return "", "", "", fmt.Errorf("github api returned %d", resp.StatusCode)
@@ -137,9 +133,7 @@ func latestRelease(ctx context.Context) (tag, sha, date string, err error) {
 	return body.TagName, body.TargetSHA, body.PublishedAt, nil
 }
 
-// latestCommit fetches the latest commit SHA on main via GitHub's public API.
-// Used as a fallback when no GitHub Release exists. No auth needed for public
-// repos; rate-limited to 60 req/hr per IP.
+// latestCommit is the fallback when no release exists yet.
 func latestCommit(ctx context.Context) (sha, date string, err error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/main", repoOwner, repoName)
 	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -172,7 +166,6 @@ func latestCommit(ctx context.Context) (sha, date string, err error) {
 }
 
 // fetchLatest tries releases first, falls back to main-branch commit.
-// Returns (tag, sha, date). tag is empty when falling back.
 func fetchLatest(ctx context.Context) (tag, sha, date string, err error) {
 	tag, sha, date, err = latestRelease(ctx)
 	if err != nil {
@@ -181,20 +174,17 @@ func fetchLatest(ctx context.Context) (tag, sha, date string, err error) {
 	if tag != "" {
 		return tag, sha, date, nil
 	}
-	// no release published yet — fall back to main-branch commit
 	sha, date, err = latestCommit(ctx)
 	return "", sha, date, err
 }
 
-// BackgroundCheck spawns a detached goroutine that refreshes the cache if
-// it's older than checkInterval. Returns immediately — never blocks the CLI.
-// Safe to call once per invocation from the main command path.
 var bgOnce sync.Once
 
+// BackgroundCheck refreshes the cache if older than checkInterval. Non-blocking.
 func BackgroundCheck() {
 	bgOnce.Do(func() {
 		go func() {
-			defer func() { _ = recover() }() // never crash the CLI for an update check
+			defer func() { _ = recover() }()
 			c := loadCache()
 			age := time.Since(time.Unix(c.LastCheckUnix, 0))
 			if c.LastCheckUnix > 0 && age < checkInterval {
@@ -215,15 +205,7 @@ func BackgroundCheck() {
 	})
 }
 
-// Notify prints a one-line banner to stderr if a newer commit exists on
-// GitHub than the one this binary was built from. "Newer" is determined by
-// commit timestamp, not just SHA — so locally-ahead builds don't trigger a
-// bogus "downgrade" banner. Silent when:
-//   - build has no VCS info (dev build)
-//   - cache is empty (first run, background check hasn't completed)
-//   - cached latest is not strictly newer than current build time
-//   - the upgrade has already been shown for this SHA (no nagging)
-//   - stderr is not a terminal OR jsonMode is true (don't pollute agent output)
+// Notify prints an update banner to stderr when remote is newer.
 func Notify(stderrIsTerminal, jsonMode bool) {
 	if !stderrIsTerminal || jsonMode {
 		return
@@ -236,7 +218,6 @@ func Notify(stderrIsTerminal, jsonMode bool) {
 	if c.LatestSHA == "" || c.LatestSHA == cur || c.ShownForSHA == c.LatestSHA {
 		return
 	}
-	// only notify if remote is strictly NEWER than our build (by date)
 	if !isRemoteNewer(c.LatestDate) {
 		return
 	}
@@ -244,46 +225,193 @@ func Notify(stderrIsTerminal, jsonMode bool) {
 	fmt.Fprintf(os.Stderr, "\x1b[33m▲\x1b[0m update available: %s → %s  (run `remarkable update`)\n",
 		shortSHA(cur), shortSHA(c.LatestSHA))
 
-	// mark as shown so we don't nag on every invocation
 	c.ShownForSHA = c.LatestSHA
 	saveCache(c)
 }
 
-// SelfUpdate rebuilds the binary to match the latest main. Strategy:
-//  1. Prefer `git pull + go build` when the running binary came from a local
-//     clone (detected by walking up from os.Executable until we find go.mod
-//     with the expected module path).
-//  2. Fall back to `go install <modulePath>@latest` which writes to $GOBIN.
-//  3. If neither works, explain why and return an error.
-//
-// Returns a human-readable status line (for printing) and any error.
-func SelfUpdate() (string, error) {
-	// 1. try in-place rebuild from the source repo
-	if repoDir, ok := findSourceRepo(); ok {
-		return rebuildInPlace(repoDir)
-	}
+// --- self-update ---
 
-	// 2. fall back to go install
-	return goInstall()
-}
+// releaseBaseURL is overridden in tests to point at httptest.Server.
+var releaseBaseURL = fmt.Sprintf("https://github.com/%s/%s/releases/download", repoOwner, repoName)
 
-// findSourceRepo walks up from the binary's real path looking for a Go module
-// rooted at modulePath. Returns the directory if found.
-func findSourceRepo() (string, bool) {
+// activeExePath returns the resolved path of the currently running binary.
+// All update strategies target this path so the binary on PATH actually changes.
+func activeExePath() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return "", false
+		return "", err
 	}
 	real, err := filepath.EvalSymlinks(exe)
 	if err != nil {
-		real = exe
+		return exe, nil
 	}
-	dir := filepath.Dir(real)
-	for i := 0; i < 8; i++ { // walk up at most 8 levels
-		goMod := filepath.Join(dir, "go.mod")
-		if data, err := os.ReadFile(goMod); err == nil {
+	return real, nil
+}
+
+// archiveName is the goreleaser-produced archive for the current OS/arch.
+func archiveName() string {
+	return fmt.Sprintf("remarkable_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+}
+
+// SelfUpdate replaces the active binary with the latest version.
+// Strategy, in order:
+//  1. Download the GitHub Release tarball for this OS/arch, verify sha256,
+//     atomically replace the active binary. Preferred — no toolchain needed
+//     and the binary has proper ldflag version info baked in.
+//  2. If running from inside a source checkout, `git pull && go build`, then
+//     copy over the active binary.
+//  3. `go install module@latest`, then copy the result over the active binary.
+//
+// Returns a status line naming the exact path that was updated.
+func SelfUpdate(ctx context.Context) (string, error) {
+	exe, err := activeExePath()
+	if err != nil {
+		return "", fmt.Errorf("cannot locate running binary: %v", err)
+	}
+
+	// 1. release tarball (preferred)
+	if tag, _, _, err := latestRelease(ctx); err == nil && tag != "" {
+		if msg, err := downloadAndReplace(ctx, tag, exe); err == nil {
+			return msg, nil
+		} else {
+			// fall through to source strategies, but remember why
+			fmt.Fprintf(os.Stderr, "release download failed (%v) — trying source build\n", err)
+		}
+	}
+
+	// 2. in-place rebuild from source clone
+	if repoDir, ok := findSourceRepo(); ok {
+		return rebuildInPlace(repoDir, exe)
+	}
+
+	// 3. go install + copy over active binary
+	return goInstallAndCopy(exe)
+}
+
+// downloadAndReplace fetches the release tarball + checksums for the current
+// OS/arch, verifies sha256, extracts the `remarkable` binary, and atomically
+// replaces `target`.
+func downloadAndReplace(ctx context.Context, tag, target string) (string, error) {
+	name := archiveName()
+	base := fmt.Sprintf("%s/%s", releaseBaseURL, tag)
+
+	client := &http.Client{Timeout: 60 * time.Second}
+
+	// 1. download checksums.txt
+	sums, err := httpGet(ctx, client, base+"/checksums.txt")
+	if err != nil {
+		return "", fmt.Errorf("fetch checksums: %v", err)
+	}
+	want, ok := parseChecksum(string(sums), name)
+	if !ok {
+		return "", fmt.Errorf("no checksum entry for %s", name)
+	}
+
+	// 2. download the archive
+	archive, err := httpGet(ctx, client, base+"/"+name)
+	if err != nil {
+		return "", fmt.Errorf("fetch %s: %v", name, err)
+	}
+
+	// 3. verify sha256
+	got := sha256.Sum256(archive)
+	if hex.EncodeToString(got[:]) != want {
+		return "", fmt.Errorf("checksum mismatch for %s", name)
+	}
+
+	// 4. extract the `remarkable` entry into a temp file next to the target
+	tmp := target + ".new"
+	if err := extractBinary(archive, "remarkable", tmp); err != nil {
+		return "", fmt.Errorf("extract: %v", err)
+	}
+
+	// 5. atomic replace
+	if err := os.Chmod(tmp, 0755); err != nil {
+		os.Remove(tmp)
+		return "", err
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		os.Remove(tmp)
+		return "", fmt.Errorf("replace %s: %v", target, err)
+	}
+
+	return fmt.Sprintf("updated %s to %s (%s/%s release)", target, tag, runtime.GOOS, runtime.GOARCH), nil
+}
+
+// httpGet is a small helper that reads a GET response into memory with a ctx.
+func httpGet(ctx context.Context, c *http.Client, url string) ([]byte, error) {
+	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req.Header.Set("User-Agent", "remarkable-cli-update")
+	resp, err := c.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("http %d", resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+// parseChecksum finds the sha256 for `name` in goreleaser's `<hash>  <file>`
+// checksums.txt format. Tolerates a leading `*` on the filename (binary mode).
+func parseChecksum(body, name string) (string, bool) {
+	for _, line := range strings.Split(body, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		f := strings.TrimPrefix(fields[1], "*")
+		if f == name {
+			return fields[0], true
+		}
+	}
+	return "", false
+}
+
+// extractBinary walks a tar.gz in memory looking for `want` and writes it to dst.
+func extractBinary(archive []byte, want, dst string) error {
+	gz, err := gzip.NewReader(strings.NewReader(string(archive)))
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return fmt.Errorf("binary %q not found in archive", want)
+		}
+		if err != nil {
+			return err
+		}
+		if filepath.Base(hdr.Name) != want {
+			continue
+		}
+		out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(out, tr); err != nil {
+			out.Close()
+			os.Remove(dst)
+			return err
+		}
+		return out.Close()
+	}
+}
+
+// findSourceRepo walks up from the running binary looking for a Go module
+// rooted at modulePath with a .git directory.
+func findSourceRepo() (string, bool) {
+	exe, err := activeExePath()
+	if err != nil {
+		return "", false
+	}
+	dir := filepath.Dir(exe)
+	for i := 0; i < 8; i++ {
+		if data, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil {
 			if strings.Contains(string(data), "module "+modulePath) {
-				// also needs a .git dir to be updatable
 				if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
 					return dir, true
 				}
@@ -298,18 +426,14 @@ func findSourceRepo() (string, bool) {
 	return "", false
 }
 
-// rebuildInPlace runs git pull + go build inside a source repo, then copies
-// the new binary on top of the currently-running one. Go on Unix allows
-// replacing a running executable via rename, so this is atomic.
-func rebuildInPlace(repoDir string) (string, error) {
-	// 1. git pull
+// rebuildInPlace runs git pull + go build in the repo, then copies the binary
+// over the currently-running executable path.
+func rebuildInPlace(repoDir, exe string) (string, error) {
 	pull := exec.Command("git", "-C", repoDir, "pull", "--ff-only")
-	out, err := pull.CombinedOutput()
-	if err != nil {
+	if out, err := pull.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("git pull failed: %s", strings.TrimSpace(string(out)))
 	}
 
-	// 2. go build into a temp path inside the repo
 	tmpBin := filepath.Join(repoDir, "remarkable.new")
 	build := exec.Command("go", "build", "-o", tmpBin, ".")
 	build.Dir = repoDir
@@ -319,36 +443,23 @@ func rebuildInPlace(repoDir string) (string, error) {
 	}
 	defer os.Remove(tmpBin)
 
-	// 3. swap into place: first the in-repo binary (the one most users symlink to)
-	inRepoBin := filepath.Join(repoDir, "remarkable")
-	if err := os.Rename(tmpBin, inRepoBin); err != nil {
-		return "", fmt.Errorf("cannot replace repo binary: %v", err)
+	if err := copyFile(tmpBin, exe); err != nil {
+		return "", fmt.Errorf("cannot update %s: %v", exe, err)
 	}
-
-	// 4. if the running binary is a separate file (not a symlink to inRepoBin),
-	//    also copy over it so an /usr/local/bin install stays fresh
-	exe, _ := os.Executable()
-	real, _ := filepath.EvalSymlinks(exe)
-	if real != "" && real != inRepoBin {
-		if err := copyFile(inRepoBin, real); err != nil {
-			return "", fmt.Errorf("rebuilt in repo but cannot update %s: %v", real, err)
-		}
-	}
-
-	return fmt.Sprintf("rebuilt from source at %s", repoDir), nil
+	return fmt.Sprintf("rebuilt from %s and updated %s", repoDir, exe), nil
 }
 
-// goInstall runs `go install <modulePath>@latest`, which updates the binary
-// in the user's $GOBIN (typically ~/go/bin/remarkable).
-func goInstall() (string, error) {
+// goInstallAndCopy runs `go install` then copies the result over the active
+// binary so the thing on PATH actually changes.
+func goInstallAndCopy(exe string) (string, error) {
 	if _, err := exec.LookPath("go"); err != nil {
-		return "", fmt.Errorf("no source repo detected and `go` is not on PATH — cannot self-update")
+		return "", fmt.Errorf("no release match, no source repo, and `go` is not on PATH — cannot self-update")
 	}
 	cmd := exec.Command("go", "install", modulePath+"@latest")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
+	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("go install failed: %s", strings.TrimSpace(string(out)))
 	}
+
 	gobin := os.Getenv("GOBIN")
 	if gobin == "" {
 		if gopath := os.Getenv("GOPATH"); gopath != "" {
@@ -357,11 +468,24 @@ func goInstall() (string, error) {
 			gobin = filepath.Join(home, "go", "bin")
 		}
 	}
-	return fmt.Sprintf("installed to %s/remarkable", gobin), nil
+	installed := filepath.Join(gobin, "remarkable")
+
+	// sanity check: the thing we just installed has to exist
+	if _, err := os.Stat(installed); err != nil {
+		return "", fmt.Errorf("go install succeeded but %s missing: %v", installed, err)
+	}
+
+	// copy onto the active binary if it's a different file
+	if installed != exe {
+		if err := copyFile(installed, exe); err != nil {
+			return "", fmt.Errorf("installed to %s but cannot update %s: %v", installed, exe, err)
+		}
+		return fmt.Sprintf("go install → %s and updated %s", installed, exe), nil
+	}
+	return fmt.Sprintf("go install → %s", installed), nil
 }
 
-// copyFile copies src to dst, preserving mode. Used when the running binary
-// lives in a different location than the repo build output.
+// copyFile atomically replaces dst with the contents of src, preserving 0755.
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -369,7 +493,6 @@ func copyFile(src, dst string) error {
 	}
 	defer in.Close()
 
-	// write to a sibling temp file then rename — avoids corrupting dst on failure
 	tmp := dst + ".tmp"
 	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
 	if err != nil {
@@ -387,9 +510,7 @@ func copyFile(src, dst string) error {
 	return os.Rename(tmp, dst)
 }
 
-// ForceCheck runs the GitHub check synchronously. Tries releases first,
-// falls back to main-branch commit. Returns (tag, sha, date); tag is empty
-// when no release is published yet.
+// ForceCheck runs the GitHub check synchronously.
 func ForceCheck(ctx context.Context) (tag, sha, date string, err error) {
 	tag, sha, date, err = fetchLatest(ctx)
 	if err != nil {
@@ -404,15 +525,15 @@ func ForceCheck(ctx context.Context) (tag, sha, date string, err error) {
 	return tag, sha, date, nil
 }
 
-// CurrentSHA is exported for display in the update command
+// CurrentSHA is exported for the `update` command.
 func CurrentSHA() string { return currentSHA() }
 
-// IsRemoteNewer is exported so `update --check` can distinguish "behind"
-// from "ahead" without printing a misleading banner.
+// ActiveExePath is exported so the `update` command can report the path.
+func ActiveExePath() (string, error) { return activeExePath() }
+
+// IsRemoteNewer is exported so `update --check` can distinguish "behind" from "ahead".
 func IsRemoteNewer(remoteDate string) bool { return isRemoteNewer(remoteDate) }
 
-// isRemoteNewer returns true when remoteDate parses and is strictly after
-// our embedded build time.
 func isRemoteNewer(remoteDate string) bool {
 	if remoteDate == "" {
 		return false
@@ -423,7 +544,7 @@ func isRemoteNewer(remoteDate string) bool {
 	}
 	mine := currentBuildTime()
 	if mine.IsZero() {
-		return true // dev build: assume anything is newer
+		return true
 	}
 	return remote.After(mine)
 }

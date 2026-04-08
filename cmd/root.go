@@ -49,9 +49,15 @@ func formatVersion(ldVersion, ldCommit, ldDate string) string {
 		ts = t.Format("2006-01-02")
 	}
 
-	// fall back to runtime/debug when ldflags weren't set
+	// fall back to runtime/debug when ldflags weren't set.
+	// info.Main.Version is set when installed via `go install mod@vX.Y.Z`
+	// (or @latest resolving to a tag) — this is how we pick up the right
+	// version string for `go install`-based upgrades.
 	if ver == "" || rev == "" || ts == "" {
 		if info, ok := debug.ReadBuildInfo(); ok {
+			if ver == "" && info.Main.Version != "" && info.Main.Version != "(devel)" {
+				ver = strings.TrimPrefix(info.Main.Version, "v")
+			}
 			for _, s := range info.Settings {
 				switch s.Key {
 				case "vcs.revision":

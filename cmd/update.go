@@ -72,15 +72,18 @@ Your binary is swapped in place with no manual steps.`,
 			return nil
 		}
 
-		// do the update
+		// do the update — use a fresh, longer ctx for the actual download
 		fmt.Fprintf(os.Stderr, "updating to %s ...\n", remoteLabel)
-		status, err := update.SelfUpdate()
+		dlCtx, dlCancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer dlCancel()
+		status, err := update.SelfUpdate(dlCtx)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "update failed: %v\n", err)
 			return err
 		}
 		fmt.Printf("✓ %s\n", status)
 		fmt.Printf("  %s → %s\n", short(curSHA), short(latestSHA))
+		fmt.Fprintln(os.Stderr, "run `remarkable --version` to confirm")
 		return nil
 	},
 }
