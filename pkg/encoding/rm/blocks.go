@@ -52,6 +52,8 @@ func parseBlock(r *Reader) (Block, error) {
 	switch blockType {
 	case BlockAuthorIds:
 		data, err = parseAuthorIds(sub)
+	case BlockSceneGlyphItem:
+		data, err = parseSceneGlyphItem(sub)
 	case BlockSceneLineItem:
 		data, err = parseSceneLineItem(sub, curVer)
 	default:
@@ -129,6 +131,113 @@ type SceneLineData struct {
 	ParentID CrdtId
 	ItemID   CrdtId
 	Line     Line
+}
+
+// SceneGlyphData holds a parsed PDF/text highlight range.
+type SceneGlyphData struct {
+	ParentID CrdtId
+	ItemID   CrdtId
+	Glyph    GlyphRange
+}
+
+func parseSceneGlyphItem(r *Reader) (*SceneGlyphData, error) {
+	result := &SceneGlyphData{}
+
+	for r.Remaining() > 0 {
+		index, tagType, err := r.ReadTag()
+		if err != nil {
+			break
+		}
+
+		switch {
+		case index == 1 && tagType == TagID:
+			result.ParentID, _ = r.ReadCrdtId()
+		case index == 2 && tagType == TagID:
+			result.ItemID, _ = r.ReadCrdtId()
+		case index == 3 && tagType == TagID:
+			r.ReadCrdtId() // leftID
+		case index == 4 && tagType == TagID:
+			r.ReadCrdtId() // rightID
+		case index == 5 && tagType == TagByte4:
+			r.ReadUint32() // deleted length
+		case index == 6 && tagType == TagLength4:
+			subLen, _ := r.ReadUint32()
+			subEnd := r.Position() + int(subLen)
+
+			itemType, _ := r.ReadUint8()
+			if itemType != 0x01 {
+				r.Skip(subEnd - r.Position())
+				break
+			}
+
+			result.Glyph, _ = parseGlyphFields(r, subEnd)
+		default:
+			skipTagValue(r, tagType)
+		}
+	}
+
+	return result, nil
+}
+
+func parseGlyphFields(r *Reader, endPos int) (GlyphRange, error) {
+	var glyph GlyphRange
+	var startValue int
+	var hasStart bool
+
+	for r.Position() < endPos {
+		index, tagType, err := r.ReadTag()
+		if err != nil {
+			break
+		}
+
+		switch {
+		case index == 2 && tagType == TagByte4:
+			v, _ := r.ReadUint32()
+			startValue = int(v)
+			hasStart = true
+		case index == 3 && tagType == TagByte4:
+			v, _ := r.ReadUint32()
+			glyph.Length = int(v)
+		case index == 4 && tagType == TagByte4:
+			v, _ := r.ReadUint32()
+			glyph.Color = model.PenColor(v)
+		case index == 5 && tagType == TagLength4:
+			subLen, _ := r.ReadUint32()
+			subEnd := r.Position() + int(subLen)
+			glyph.Text, _ = r.ReadString()
+			if r.Position() < subEnd {
+				r.Skip(subEnd - r.Position())
+			}
+		case index == 6 && tagType == TagLength4:
+			subLen, _ := r.ReadUint32()
+			subEnd := r.Position() + int(subLen)
+			count, _ := r.ReadVaruint()
+			glyph.Rects = make([]Rect, 0, count)
+			for i := uint64(0); i < count; i++ {
+				x, _ := r.ReadFloat64()
+				y, _ := r.ReadFloat64()
+				w, _ := r.ReadFloat64()
+				h, _ := r.ReadFloat64()
+				glyph.Rects = append(glyph.Rects, Rect{X: x, Y: y, W: w, H: h})
+			}
+			if r.Position() < subEnd {
+				r.Skip(subEnd - r.Position())
+			}
+		case index == 7 && tagType == TagByte4:
+			glyph.ColorRGBA, _ = r.ReadUint32()
+		default:
+			skipTagValue(r, tagType)
+		}
+	}
+
+	if hasStart {
+		glyph.Start = &startValue
+	}
+	if glyph.Length == 0 {
+		glyph.Length = len(glyph.Text)
+	}
+
+	return glyph, nil
 }
 
 func parseSceneLineItem(r *Reader, version uint8) (*SceneLineData, error) {

@@ -1,6 +1,7 @@
 package rm
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
@@ -131,5 +132,55 @@ func TestParseBlocks_AuthorIds(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestParseBlocks_ExtractGlyphsFromSyntheticFixture(t *testing.T) {
+	const fixtureBase64 = "cmVNYXJrYWJsZSAubGluZXMgZmlsZSwgdmVyc2lvbj02ICAgICAgICAgIBkAAAAAAQEJAQwTAAAAEBEREREREREREREREREREREBAAcAAAAAAQEAHwEBIQExABkAAAAAAAEKFAEAAAAkAAAAADQPAAAARAEAAABUAAAAABAAAAAAAQEBHwALLwAAMQFMAwAAAB8AARwAAAAAAQICHwABLAoAAAAfAAAsAgAAAAABPAUAAAAfAAAhASMAAAAAAQICHwALLBEAAAAfAAwsCQAAAAcBTGF5ZXIgMTwFAAAAHwAAIQEaAAAAAAEBBB8AAS8ADT8AAE8AAFQAAAAAbAQAAAACLwALXgAAAAABAQMfAAsvAQ4/AABPAABUAAAAAGxIAAAAASQKAAAANAsAAABECQAAAFwNAAAACwFIZWxsbyB3b3JsZGwhAAAAAQAAAAAAAPA/AAAAAAAAAEAAAAAAAAAIQAAAAAAAABBA"
+
+	data, err := base64.StdEncoding.DecodeString(fixtureBase64)
+	if err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+
+	blocks, err := ParseBlocks(data)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	var glyphs []GlyphRange
+	for _, b := range blocks {
+		if b.Type != BlockSceneGlyphItem {
+			continue
+		}
+		gd, ok := b.Data.(*SceneGlyphData)
+		if !ok || gd == nil {
+			t.Fatalf("expected SceneGlyphData, got %#v", b.Data)
+		}
+		glyphs = append(glyphs, gd.Glyph)
+	}
+
+	if len(glyphs) != 1 {
+		t.Fatalf("expected 1 glyph, got %d", len(glyphs))
+	}
+
+	got := glyphs[0]
+	if got.Start == nil || *got.Start != 10 {
+		t.Fatalf("expected start 10, got %#v", got.Start)
+	}
+	if got.Length != 11 {
+		t.Fatalf("expected length 11, got %d", got.Length)
+	}
+	if got.Text != "Hello world" {
+		t.Fatalf("expected text %q, got %q", "Hello world", got.Text)
+	}
+	if got.Color != 9 {
+		t.Fatalf("expected highlight color 9, got %d", got.Color)
+	}
+	if len(got.Rects) != 1 {
+		t.Fatalf("expected 1 rectangle, got %d", len(got.Rects))
+	}
+	if got.Rects[0].W != 3 || got.Rects[0].H != 4 {
+		t.Fatalf("unexpected rectangle: %#v", got.Rects[0])
 	}
 }

@@ -75,7 +75,7 @@ type Line struct {
 
 // GlyphRange represents a PDF highlight annotation
 type GlyphRange struct {
-	Start     int
+	Start     *int
 	Length    int
 	Color     model.PenColor
 	Text      string
