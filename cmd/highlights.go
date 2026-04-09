@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -175,6 +176,8 @@ func collectLibraryHighlights(t highlightTransport) ([]highlightExportResult, er
 		path := strings.TrimPrefix(tree.Path(doc.ID), "/")
 		docResults, err := collectDocumentHighlights(t, doc, path, 0)
 		if err != nil {
+			// surface per-doc failures so --all doesn't silently drop docs
+			fmt.Fprintf(os.Stderr, "highlights: skip %q: %v\n", path, err)
 			continue
 		}
 		results = append(results, docResults...)
@@ -283,8 +286,11 @@ func readRMHighlights(t highlightFileReader, docID, pageID string) []rawHighligh
 	if err != nil {
 		return nil
 	}
-	data, _ := io.ReadAll(rc)
+	data, err := io.ReadAll(rc)
 	rc.Close()
+	if err != nil {
+		return nil
+	}
 
 	blocks, err := rm.ParseBlocks(data)
 	if err != nil {
@@ -427,10 +433,8 @@ func highlightStart(h rawHighlight) int {
 	return *h.Start
 }
 
+// highlightEnd assumes h.Start != nil — callers must guard (see canMerge).
 func highlightEnd(h rawHighlight) int {
-	if h.Start == nil {
-		return h.Length
-	}
 	return *h.Start + h.Length
 }
 
