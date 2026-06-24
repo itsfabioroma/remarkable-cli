@@ -162,7 +162,7 @@ func (t *CloudTransport) ReadFile(docID, path string) (io.ReadCloser, error) {
 		return nil, err
 	}
 
-	docIndex, err := t.fetchBlob(entryHash)
+	docIndex, err := t.fetchBlob(entryHash, docID+".docSchema")
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +174,7 @@ func (t *CloudTransport) ReadFile(docID, path string) (io.ReadCloser, error) {
 			fmt.Sprintf("file %q not found in doc %s", path, docID))
 	}
 
-	data, err := t.fetchBlob(fileHash)
+	data, err := t.fetchBlob(fileHash, targetFile)
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +189,7 @@ func (t *CloudTransport) GetMetadata(docID string) (*model.Metadata, error) {
 		return nil, err
 	}
 
-	docIndex, err := t.fetchBlob(entryHash)
+	docIndex, err := t.fetchBlob(entryHash, docID+".docSchema")
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +200,7 @@ func (t *CloudTransport) GetMetadata(docID string) (*model.Metadata, error) {
 			fmt.Sprintf("metadata not found for %s", docID))
 	}
 
-	metaBody, err := t.fetchBlob(metaHash)
+	metaBody, err := t.fetchBlob(metaHash, docID+".metadata")
 	if err != nil {
 		return nil, err
 	}
@@ -278,7 +278,7 @@ func (t *CloudTransport) SyncDoc(docID string) error {
 		var baseEntries []indexEntry
 		for _, e := range rs.entries {
 			if e.docID == docID {
-				body, err := t.fetchBlob(e.hash)
+				body, err := t.fetchBlob(e.hash, docID+".docSchema")
 				if err != nil {
 					return err
 				}
@@ -516,7 +516,7 @@ func (t *CloudTransport) loadRootState() (*rootState, error) {
 	}
 
 	// root index blob is content-addressed → safe to fetch via blob cache
-	indexBody, err := t.fetchBlob(root.Hash)
+	indexBody, err := t.fetchBlob(root.Hash, "root.docSchema")
 	if err != nil {
 		return nil, err
 	}
@@ -716,7 +716,7 @@ func findFileHash(indexBody []byte, targetFile string) string {
 }
 
 func (t *CloudTransport) fetchDocMeta(hash, docID string) (*model.Document, error) {
-	body, err := t.fetchBlob(hash)
+	body, err := t.fetchBlob(hash, docID+".docSchema")
 	if err != nil {
 		return nil, err
 	}
@@ -726,7 +726,7 @@ func (t *CloudTransport) fetchDocMeta(hash, docID string) (*model.Document, erro
 		return &model.Document{ID: docID, Name: docID}, nil
 	}
 
-	metaBody, err := t.fetchBlob(metaHash)
+	metaBody, err := t.fetchBlob(metaHash, docID+".metadata")
 	if err != nil {
 		return nil, err
 	}
@@ -864,6 +864,21 @@ func (t *CloudTransport) authGet(url string) ([]byte, error) {
 	return body, err
 }
 
+// authGetBlob fetches a blob by URL, sending the required rm-filename header.
+// The sync v3 API rejects GET requests that are missing this header.
+func (t *CloudTransport) authGetBlob(url, filename string) ([]byte, error) {
+	body, _, err := t.do(func() (*http.Request, error) {
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+t.tokens.UserToken)
+		req.Header["rm-filename"] = []string{filename}
+		return req, nil
+	})
+	return body, err
+}
+
 // authPut uploads a blob with rm-filename and rm-filesize headers
 func (t *CloudTransport) authPut(url string, data []byte, rmFilename string) error {
 	_, _, err := t.do(func() (*http.Request, error) {
@@ -901,7 +916,6 @@ func (t *CloudTransport) updateRoot(newHash string, currentGeneration int64) (in
 		}
 		req.Header.Set("Authorization", "Bearer "+t.tokens.UserToken)
 		req.Header.Set("Content-Type", "application/json")
-		req.Header["rm-filename"] = []string{"roothash"}
 		return req, nil
 	})
 	if err != nil {
@@ -944,8 +958,11 @@ func blobCachePath(hash string) string {
 	return filepath.Join(home, ".config", "remarkable-cli", "blobs", hash[:2], hash)
 }
 
-// fetchBlob returns a blob by hash, hitting the disk cache first
-func (t *CloudTransport) fetchBlob(hash string) ([]byte, error) {
+// fetchBlob returns a blob by hash, hitting the disk cache first.
+// filename is the logical name the server associated with this blob (e.g.
+// "<docID>.metadata", "<docID>.docSchema", "root.docSchema"). The sync v3
+// API requires the rm-filename header on both GET and PUT requests.
+func (t *CloudTransport) fetchBlob(hash, filename string) ([]byte, error) {
 	path := blobCachePath(hash)
 	if path != "" {
 		if data, err := os.ReadFile(path); err == nil {
@@ -953,7 +970,7 @@ func (t *CloudTransport) fetchBlob(hash string) ([]byte, error) {
 		}
 	}
 
-	data, err := t.authGet(filesURL + "/" + hash)
+	data, err := t.authGetBlob(filesURL+"/"+hash, filename)
 	if err != nil {
 		return nil, err
 	}
